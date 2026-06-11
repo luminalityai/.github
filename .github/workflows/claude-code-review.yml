@@ -1,0 +1,70 @@
+name: Claude Code Review
+
+on:
+  workflow_call:
+
+env:
+  # Single source of truth for the Claude model across this repo's Claude
+  # workflows. Override org-wide via the CLAUDE_MODEL Actions variable; the
+  # literal is a safe fallback so an unset var can't yield an empty --model.
+  CLAUDE_MODEL: "${{ vars.CLAUDE_MODEL || 'claude-opus-4-8' }}"
+
+jobs:
+  claude_review:
+    name: Claude Code Review
+    if: github.event.pull_request.draft == false && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # Secrets aren't allowed in `if:` expressions, so route through env and
+      # short-circuit downstream steps when the token is missing. Lets the
+      # workflow run on repos / forks that haven't (yet) been wired up with
+      # the CLAUDE_CODE_OAUTH_TOKEN secret without producing a hard failure.
+      - name: Check for Claude OAuth token
+        id: token-check
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN secret is not configured; skipping Claude review."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.token-check.outputs.skip != 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        if: steps.token-check.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@7f37f2e37370b88fc5bd16496c0512c6e8aa2e45 # main@2.1.160 (thinking-block 400 fix; ahead of release v1.0.133 — see rarebit-one/rarebit-ops#119)
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          allowed_bots: '*'
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Please review this pull request and provide feedback on:
+            - Code quality and best practices
+            - Potential bugs or issues
+            - Performance considerations
+            - Security concerns
+            - Test coverage
+
+            Use the repository's CLAUDE.md for guidance on style and conventions.
+            Be constructive and helpful in your feedback.
+
+            Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
+
+          # Read/Glob/Grep let the reviewer inspect the checked-out source
+          # (type defs, tests, the CLAUDE.md the prompt references) instead of
+          # reasoning from `gh pr diff` alone. Deliberately read-only — no Edit
+          # or mutating Bash — so the workflow stays fork-safe and resistant to
+          # prompt injection from untrusted PR content.
+          claude_args: '--model ${{ env.CLAUDE_MODEL }} --allowed-tools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"'

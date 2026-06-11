@@ -1,0 +1,84 @@
+# Org-shared composite — the single source of truth for the agentic-run action
+# used by the cron/ops workflows in delivery-ops. Consume it with:
+#
+#   uses: luminalityai/.github/.github/actions/agentic-run@main
+#
+# Mirrors the same-named composite kept in sync across the sibling org .github
+# repos (rarebit-one, fundbright). Keep the input names/defaults stable so
+# consumers switch with a one-line `uses:` change. Harden / fix CI-agent
+# invocation HERE so the change lands once for all consumers.
+name: "Agentic run (Claude)"
+description: >
+  Run Claude Code on a custom prompt for the cron/ops workflows, via the
+  org-standard anthropics/claude-code-action (subscription OAuth). Where a repo
+  runs deterministic collectors first (they emit JSON), this is the judgment +
+  write layer on top of that data.
+
+inputs:
+  prompt:
+    description: "Inline prompt. Ignored when prompt-file is set."
+    required: false
+    default: ""
+  prompt-file:
+    description: "Path to a file containing the prompt. Preferred."
+    required: false
+    default: ""
+  claude-oauth-token:
+    description: "CLAUDE_CODE_OAUTH_TOKEN (subscription auth from `claude setup-token`)."
+    required: true
+  github-token:
+    description: "Token for the agent's git/gh operations. Pass an app token for cross-repo writes; defaults to the job token."
+    required: false
+    default: ""
+  model:
+    description: "Claude model (e.g. claude-opus-4-8)."
+    required: false
+    default: "claude-opus-4-8"
+  allowed-tools:
+    description: "Comma-separated tools the agent may use."
+    required: false
+    default: "Bash,Read,Write,Edit,Glob,Grep"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Assemble prompt
+      id: prep
+      shell: bash
+      env:
+        INLINE_PROMPT: ${{ inputs.prompt }}
+        PROMPT_FILE: ${{ inputs.prompt-file }}
+      run: |
+        set -euo pipefail
+        # Fail fast on a misconfigured caller — an empty prompt would otherwise
+        # run the agent on nothing (a confusing no-op) instead of erroring.
+        if [ -z "$PROMPT_FILE" ] && [ -z "$INLINE_PROMPT" ]; then
+          echo "::error::agentic-run needs either 'prompt' or 'prompt-file'"; exit 1
+        fi
+        DELIM="PROMPT_EOF_$(openssl rand -hex 8)"
+        {
+          echo "value<<$DELIM"
+          if [ -n "$PROMPT_FILE" ]; then
+            # assignment fails loudly under set -e on a bad path; $() strips
+            # trailing newlines so printf re-adds exactly one (fixes the
+            # "Matching delimiter not found" footgun).
+            body="$(cat "$PROMPT_FILE")"
+            printf '%s\n' "$body"
+          else
+            printf '%s\n' "$INLINE_PROMPT"
+          fi
+          echo "$DELIM"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Run Claude Code
+      uses: anthropics/claude-code-action@7f37f2e37370b88fc5bd16496c0512c6e8aa2e45 # main@2.1.160 (thinking-block 400 fix; ahead of release v1.0.133 — see rarebit-one/rarebit-ops#119)
+      env:
+        # The agent's `gh`/`git` calls inside Bash use this (cross-repo needs an app token).
+        GH_TOKEN: ${{ inputs.github-token || github.token }}
+      with:
+        claude_code_oauth_token: ${{ inputs.claude-oauth-token }}
+        github_token: ${{ inputs.github-token || github.token }}
+        prompt: ${{ steps.prep.outputs.value }}
+        additional_permissions: |
+          actions: read
+        claude_args: '--model ${{ inputs.model }} --allowedTools "${{ inputs.allowed-tools }}"'
