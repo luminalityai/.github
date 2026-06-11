@@ -1,0 +1,32 @@
+name: Claude Code Agent
+
+on:
+  workflow_call:
+
+env:
+  # Single source of truth for the Claude model across this repo's Claude
+  # workflows. Override org-wide via the CLAUDE_MODEL Actions variable; the
+  # literal is a safe fallback so an unset var can't yield an empty --model.
+  CLAUDE_MODEL: "${{ vars.CLAUDE_MODEL || 'claude-opus-4-8' }}"
+
+jobs:
+  claude:
+    name: Claude Code Agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@7f37f2e37370b88fc5bd16496c0512c6e8aa2e45 # main@2.1.160 (thinking-block 400 fix; ahead of release v1.0.133 — see rarebit-ops#119)
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+          # Pin the model so the interactive agent doesn't silently shift when
+          # the action's default changes. Keep in lockstep with claude-code-review.yml.
+          claude_args: '--model ${{ env.CLAUDE_MODEL }}'
