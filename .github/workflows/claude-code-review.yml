@@ -33,21 +33,6 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # `track_progress: true` (below) needs the action to act as an installed
-      # GitHub App, not the default GITHUB_TOKEN — otherwise it fails with
-      # "Claude Code is not installed on this repository". Anthropic's hosted
-      # Claude app is deliberately NOT installed on this org; instead we mint an
-      # installation token from the org's own luminality-release-bot app (already
-      # installed on every repo) and hand it to the action as `github_token`.
-      # create-github-app-token scopes the token to the caller repo it runs in.
-      - name: Generate release-bot token
-        id: app-token
-        if: steps.token-check.outputs.skip != 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-
       - name: Checkout repository
         if: steps.token-check.outputs.skip != 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -59,7 +44,14 @@ jobs:
         uses: anthropics/claude-code-action@7f37f2e37370b88fc5bd16496c0512c6e8aa2e45 # main@2.1.160 (thinking-block 400 fix; ahead of release v1.0.133 — see rarebit-one/rarebit-ops#119)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ steps.app-token.outputs.token }}
+          # Pass the default Actions token explicitly. Without a github_token the
+          # action tries to exchange the OIDC token for a Claude GitHub App
+          # installation token — which 401s as "Claude Code is not installed"
+          # because that app isn't installed on this org. Supplying the built-in
+          # token skips that exchange; github-actions[bot] has the
+          # pull-requests: write needed to post the review and the track_progress
+          # comment, so no GitHub App / release-bot identity is required.
+          github_token: ${{ github.token }}
           track_progress: true
           allowed_bots: '*'
           prompt: |
