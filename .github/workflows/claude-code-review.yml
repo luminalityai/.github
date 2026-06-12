@@ -44,11 +44,15 @@ jobs:
         uses: anthropics/claude-code-action@7f37f2e37370b88fc5bd16496c0512c6e8aa2e45 # main@2.1.160 (thinking-block 400 fix; ahead of release v1.0.133 — see rarebit-one/rarebit-ops#119)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # No `track_progress` / GitHub App: the action posts its review via the
-          # default GITHUB_TOKEN (as github-actions[bot]) using the `gh pr comment`
-          # instruction below. `track_progress: true` would require an installed
-          # GitHub App (Anthropic's hosted Claude app, not present on this org), so
-          # it's deliberately omitted to avoid borrowing the release-bot identity.
+          # Pass the default Actions token explicitly. Without a github_token the
+          # action tries to exchange the OIDC token for a Claude GitHub App
+          # installation token — which 401s as "Claude Code is not installed"
+          # because that app isn't installed on this org. Supplying the built-in
+          # token skips that exchange; github-actions[bot] has the
+          # pull-requests: write needed to post the review and the track_progress
+          # comment, so no GitHub App / release-bot identity is required.
+          github_token: ${{ github.token }}
+          track_progress: true
           allowed_bots: '*'
           prompt: |
             REPO: ${{ github.repository }}
