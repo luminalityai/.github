@@ -1,0 +1,26 @@
+name: Claude Code Review
+
+# Caller that runs the review on PRs to this repo itself. The reusable
+# definition lives alongside it (claude-code-review.yml, `on: workflow_call`)
+# and doesn't self-trigger, so without this caller PRs to .github — e.g. changes
+# to the shared reusable workflows — would go unreviewed. Referenced locally
+# (`./`) so a PR is reviewed by the reusable workflow as it exists on the base.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    uses: ./.github/workflows/claude-code-review.yml
+    secrets: inherit
