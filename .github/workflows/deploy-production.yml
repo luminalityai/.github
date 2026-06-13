@@ -241,6 +241,69 @@ jobs:
             echo "::warning::Failed to notify Sentry of deploy — deployment itself succeeded"
           fi
 
+      - name: Notify Slack that the release started
+        # Sibling of the Sentry-notify step above: fires once main has been
+        # promoted to the production branch + tag cut, BEFORE DigitalOcean has
+        # finished rolling it out. (Only the "release started" message exists
+        # here — luminality-web's prod caller is minimal and has no post-deploy
+        # smoke probe to hook a "live & healthy" follow-up onto, unlike
+        # fundbright-web.)
+        #
+        # Fail-soft, exactly like Sentry: skips with a ::warning:: when the
+        # Slack app isn't provisioned yet (no SLACK_BOT_TOKEN secret) or the
+        # destination channel var (SLACK_RELEASE_CHANNEL_ID) is unset. So this
+        # step is inert until those are configured — the promotion itself never
+        # depends on Slack being wired up.
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_RELEASE_CHANNEL_ID: ${{ vars.SLACK_RELEASE_CHANNEL_ID }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          SHA: ${{ steps.main.outputs.sha }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          COMMIT_COUNT: ${{ steps.check.outputs.commit_count }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
+            echo "::warning::SLACK_BOT_TOKEN not configured — skipping Slack release notification"
+            exit 0
+          fi
+          if [ -z "${SLACK_RELEASE_CHANNEL_ID:-}" ]; then
+            echo "::warning::SLACK_RELEASE_CHANNEL_ID var not set — skipping Slack release notification"
+            exit 0
+          fi
+
+          SHORT_SHA="${SHA:0:9}"
+          RELEASE_URL="${SERVER_URL}/${REPO}/releases/tag/${TAG}"
+
+          # mrkdwn, one fact per line (the org's slack-post discipline). printf
+          # builds the multi-line text so each line stays indented under this
+          # block scalar; jq then makes it JSON-safe — no hand-escaped strings.
+          TEXT=$(printf '%s\n' \
+            "🚀 *Production release started* — \`${REPO}\`" \
+            "*Tag:* <${RELEASE_URL}|${TAG}>" \
+            "*Commit:* \`${SHORT_SHA}\` (${COMMIT_COUNT} commit(s))" \
+            "*Status:* promoted to the \`production\` branch — DigitalOcean is now rolling it out.")
+
+          PAYLOAD=$(jq -n \
+            --arg channel "$SLACK_RELEASE_CHANNEL_ID" \
+            --arg text "$TEXT" \
+            '{channel: $channel, text: $text, unfurl_links: false, unfurl_media: false}')
+
+          RESP=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "$PAYLOAD" || true)
+
+          if [ "$(echo "$RESP" | jq -r '.ok // false')" = "true" ]; then
+            echo "Posted release-started notice to Slack channel ${SLACK_RELEASE_CHANNEL_ID}"
+          else
+            # Never fail the promotion over a Slack hiccup — surface and move on.
+            echo "::warning::Slack release notification failed: $(echo "$RESP" | jq -r '.error // "unknown error"')"
+          fi
+
       - name: Final summary
         if: always()
         run: |
