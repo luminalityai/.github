@@ -192,6 +192,11 @@ jobs:
           SHA="${{ steps.main.outputs.sha }}"
           TAG="${{ steps.tag.outputs.tag }}"
 
+          # Annotated tags record a tagger identity; the runner has none by
+          # default, so `git tag -a` fails with "empty ident name". Set one.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git tag -a "$TAG" "$SHA" -m "Production release $TAG"
           git push origin "$TAG"
           echo "Created and pushed tag $TAG"
