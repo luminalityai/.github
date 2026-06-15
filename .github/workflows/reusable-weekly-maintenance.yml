@@ -125,12 +125,20 @@ on:
         required: true
       delivery-ops-token:
         description: >-
-          Token the agent uses to open the single risky-findings issue in
-          luminalityai/delivery-ops. The job token (github.token) is scoped to
-          the calling repo only, so a cross-repo write needs a token with
-          issues:write on delivery-ops (e.g. a GitHub App installation token).
-          When omitted, the agent falls back to the job token and the
-          cross-repo issue step is skipped (it logs a notice instead).
+          Manual override token the agent uses to open the single risky-findings
+          issue in luminalityai/delivery-ops. The job token (github.token) is
+          scoped to the calling repo only, so a cross-repo write needs a token
+          with issues:write on delivery-ops (e.g. a GitHub App installation
+          token). Normally unnecessary: if release-bot-private-key is provided
+          the workflow mints such a token automatically. When NEITHER is set the
+          agent falls back to the job token and the cross-repo issue step is
+          skipped (it logs a notice instead).
+        required: false
+      release-bot-private-key:
+        description: >-
+          PEM private key for the luminality-release-bot GitHub App; when
+          provided, the workflow mints a delivery-ops-scoped token so
+          risky-findings issues can be filed cross-repo.
         required: false
 
 permissions: {}
@@ -172,6 +180,10 @@ jobs:
       - name: Validate required secrets
         env:
           CLAUDE_TOKEN: ${{ secrets.claude-code-oauth-token }}
+          # A cross-repo delivery-ops write is available when either the
+          # release-bot app key (minted below) or the manual override token is
+          # present. This step runs before the mint step, so gate on the inputs.
+          RELEASE_BOT_KEY: ${{ secrets.release-bot-private-key }}
           DELIVERY_OPS_TOKEN: ${{ secrets.delivery-ops-token }}
         run: |
           set -euo pipefail
@@ -179,8 +191,8 @@ jobs:
             echo "::error::claude-code-oauth-token secret is not set"
             exit 1
           fi
-          if [ -z "${DELIVERY_OPS_TOKEN:-}" ]; then
-            echo "::notice::delivery-ops-token not set - risky-findings issues will not be filed in luminalityai/delivery-ops (the job token cannot write cross-repo); findings will be summarised in the PR body instead"
+          if [ -z "${RELEASE_BOT_KEY:-}" ] && [ -z "${DELIVERY_OPS_TOKEN:-}" ]; then
+            echo "::notice::no cross-repo token available (neither release-bot-private-key nor delivery-ops-token set) - risky-findings issues will not be filed in luminalityai/delivery-ops (the job token cannot write cross-repo); findings will be summarised in the PR body instead"
           fi
 
       - name: Checkout repository
@@ -324,6 +336,26 @@ jobs:
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "## Open CodeQL alerts: $COUNT" >> "$GITHUB_STEP_SUMMARY"
 
+      # ----- mint cross-repo delivery-ops token (luminality-release-bot App) -----
+
+      - name: Mint delivery-ops App token
+        id: app-token
+        # Only runs when the release-bot key is supplied. When this step is
+        # skipped, steps.app-token.outputs.token resolves to '' downstream, so
+        # the manual delivery-ops-token / job-token fallbacks still apply. Runs
+        # before build-prompt so the prompt gate can see the minted token.
+        # (The `secrets` context is not available in a step-level `if`, so gate
+        # on an env var that carries the secret's presence.)
+        env:
+          RELEASE_BOT_KEY: ${{ secrets.release-bot-private-key }}
+        if: ${{ env.RELEASE_BOT_KEY != '' }}
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: 4029162
+          private-key: ${{ secrets.release-bot-private-key }}
+          owner: luminalityai
+          repositories: delivery-ops
+
       # ----- assemble prompt + allowed-tools (shell is much easier than expressions) -----
 
       - name: Assemble Claude prompt and MCP config
@@ -338,10 +370,11 @@ jobs:
           LINT_COMMANDS: ${{ inputs.lint-commands }}
           TEST_COMMANDS: ${{ inputs.test-commands }}
           GRADLE_TEST_COMMAND: ${{ inputs.gradle-test-command }}
-          # Whether a cross-repo token for delivery-ops is available. Avoids
-          # leaking the token itself into the prompt; gates the issue-fallback
+          # Whether a cross-repo token for delivery-ops is available — either the
+          # minted release-bot App token or the manual override. Avoids leaking
+          # the token itself into the prompt; gates the issue-fallback
           # instructions on whether the write can actually succeed.
-          DELIVERY_OPS_TOKEN_SET: ${{ secrets.delivery-ops-token != '' }}
+          DELIVERY_OPS_TOKEN_SET: ${{ steps.app-token.outputs.token != '' || secrets.delivery-ops-token != '' }}
           ADDITIONAL_ALLOWED_TOOLS: ${{ inputs.additional-allowed-tools }}
           DEFAULT_BRANCH: ${{ steps.default-branch.outputs.branch }}
           REPO: ${{ github.repository }}
@@ -536,10 +569,11 @@ jobs:
         uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251 # v1
         timeout-minutes: ${{ inputs.claude-timeout-minutes }}
         env:
-          # The agent's `gh`/`git` Bash calls authenticate with this. Defaults
-          # to the job token (scoped to the calling repo); pass delivery-ops-token
-          # for the cross-repo issue write into luminalityai/delivery-ops.
-          GH_TOKEN: ${{ secrets.delivery-ops-token || github.token }}
+          # The agent's `gh`/`git` Bash calls authenticate with this. Precedence:
+          # minted release-bot App token -> manual delivery-ops-token override ->
+          # job token (scoped to the calling repo). The first two grant the
+          # cross-repo issue write into luminalityai/delivery-ops.
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.delivery-ops-token || github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.claude-code-oauth-token }}
           show_full_output: true
