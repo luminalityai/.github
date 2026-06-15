@@ -88,11 +88,6 @@ on:
         required: false
         type: string
         default: './gradlew test'
-      linear-fallback:
-        description: 'When true, Claude opens a Linear issue for risky/judgment-call items instead of dropping them.'
-        required: false
-        type: boolean
-        default: false
       additional-allowed-tools:
         description: 'Comma-separated extra entries appended to claude_args --allowed-tools.'
         required: false
@@ -128,8 +123,14 @@ on:
       claude-code-oauth-token:
         description: 'CLAUDE_CODE_OAUTH_TOKEN for the anthropics action.'
         required: true
-      linear-api-key:
-        description: 'LINEAR_API_KEY for the Linear MCP server (only used when linear-fallback=true).'
+      delivery-ops-token:
+        description: >-
+          Token the agent uses to open the single risky-findings issue in
+          luminalityai/delivery-ops. The job token (github.token) is scoped to
+          the calling repo only, so a cross-repo write needs a token with
+          issues:write on delivery-ops (e.g. a GitHub App installation token).
+          When omitted, the agent falls back to the job token and the
+          cross-repo issue step is skipped (it logs a notice instead).
         required: false
 
 permissions: {}
@@ -171,16 +172,15 @@ jobs:
       - name: Validate required secrets
         env:
           CLAUDE_TOKEN: ${{ secrets.claude-code-oauth-token }}
-          LINEAR_KEY: ${{ secrets.linear-api-key }}
-          LINEAR_FALLBACK: ${{ inputs.linear-fallback }}
+          DELIVERY_OPS_TOKEN: ${{ secrets.delivery-ops-token }}
         run: |
           set -euo pipefail
           if [ -z "${CLAUDE_TOKEN:-}" ]; then
             echo "::error::claude-code-oauth-token secret is not set"
             exit 1
           fi
-          if [ "$LINEAR_FALLBACK" = "true" ] && [ -z "${LINEAR_KEY:-}" ]; then
-            echo "::warning::linear-fallback enabled but linear-api-key is empty - Linear fallback will be unavailable"
+          if [ -z "${DELIVERY_OPS_TOKEN:-}" ]; then
+            echo "::notice::delivery-ops-token not set - risky-findings issues will not be filed in luminalityai/delivery-ops (the job token cannot write cross-repo); findings will be summarised in the PR body instead"
           fi
 
       - name: Checkout repository
@@ -338,8 +338,10 @@ jobs:
           LINT_COMMANDS: ${{ inputs.lint-commands }}
           TEST_COMMANDS: ${{ inputs.test-commands }}
           GRADLE_TEST_COMMAND: ${{ inputs.gradle-test-command }}
-          LINEAR_FALLBACK: ${{ inputs.linear-fallback }}
-          LINEAR_API_KEY: ${{ secrets.linear-api-key }}
+          # Whether a cross-repo token for delivery-ops is available. Avoids
+          # leaking the token itself into the prompt; gates the issue-fallback
+          # instructions on whether the write can actually succeed.
+          DELIVERY_OPS_TOKEN_SET: ${{ secrets.delivery-ops-token != '' }}
           ADDITIONAL_ALLOWED_TOOLS: ${{ inputs.additional-allowed-tools }}
           DEFAULT_BRANCH: ${{ steps.default-branch.outputs.branch }}
           REPO: ${{ github.repository }}
@@ -421,8 +423,8 @@ jobs:
               echo "- Open CodeQL alerts: ${CODEQL_ALERT_COUNT:-0} (full details in \`tmp/maintenance/codeql-alerts.json\`)."
               echo "- For each open alert: if it is genuinely actionable and a safe, minimal fix exists, apply it in this PR. Otherwise summarise it in the PR body (rule id, file:line, and why it's deferred — e.g. false positive / by design)."
               echo "- Do NOT dismiss code-scanning alerts — dismissal is a human decision."
-              if [ "$LINEAR_FALLBACK" = "true" ]; then
-                echo "- Route any finding that needs a judgment call or a larger change to the single Linear issue."
+              if [ "$DELIVERY_OPS_TOKEN_SET" = "true" ]; then
+                echo "- Route any finding that needs a judgment call or a larger change to the single risky-findings issue in luminalityai/delivery-ops (see Output rules)."
               fi
             fi
             echo
@@ -460,10 +462,12 @@ jobs:
             echo "- If \`git diff\` is empty after updates: output \"No dependency changes needed\" and summarise findings (TODO/FIXME, stale PRs, audit). No PR."
             echo "- If diff is non-empty AND verification passed: open a signed PR via the steps below."
             echo "- If diff is non-empty AND verification failed: do NOT open a PR; output the failure summary."
-            if [ "$LINEAR_FALLBACK" = "true" ]; then
-              echo "- For risky judgment-call items (major bumps, code-changing fixes, design-decision TODOs): create ONE Linear issue summarising findings. Determine team/project/labels by querying Linear. Always include RUN_URL in the issue body."
+            if [ "$DELIVERY_OPS_TOKEN_SET" = "true" ]; then
+              echo "- For risky judgment-call items (major bumps, code-changing fixes, design-decision TODOs): create ONE GitHub issue in luminalityai/delivery-ops summarising the findings. Use: \`gh issue create --repo luminalityai/delivery-ops --title \"...\" --body \"...\"\` (gh is authenticated via the GH_TOKEN env). The issue body MUST include RUN_URL. Create only ONE issue per run; if there are no risky items, create none."
+            else
+              echo "- Risky judgment-call items: no delivery-ops token is configured for cross-repo writes, so do NOT attempt to create an issue. Summarise these items in the PR body (or the no-PR findings summary) instead."
             fi
-            echo "- Do NOT create or reference GitHub Issues (these repos do not use them)."
+            echo "- Do NOT create or reference GitHub Issues in THIS repo. The only issue you may open is the single risky-findings issue in luminalityai/delivery-ops described above."
             echo "- Always include RUN_URL in the PR body."
             echo
             echo "## PR creation (when there are changes AND verification passes)"
@@ -500,7 +504,7 @@ jobs:
           } > "$PROMPT_FILE"
 
           # Build the --allowed-tools list.
-          BASE_TOOLS='Read,Glob,Grep,Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git diff:*),Bash(git status:*),Bash(git log:*),Bash(git rev-parse:*),Bash(bundle lock:*),Bash(bundle update:*),Bash(bundle install:*),Bash(bundle exec bundler-audit:*),Bash(bundle exec rubocop:*),Bash(bundle exec rspec:*),Bash(bundle audit:*),Bash(bin/rspec:*),Bash(bin/rubocop:*),Bash(bin/brakeman:*),Bash(bin/tapioca:*),Bash(npm audit:*),Bash(npm run:*),Bash(npm outdated:*),Bash(npm test:*),Bash(./gradlew:*),Bash(cat tmp/maintenance/*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(diff:*),Bash(gh pr:*),Bash(gh repo:*),Bash(gh api:*)'
+          BASE_TOOLS='Read,Glob,Grep,Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git diff:*),Bash(git status:*),Bash(git log:*),Bash(git rev-parse:*),Bash(bundle lock:*),Bash(bundle update:*),Bash(bundle install:*),Bash(bundle exec bundler-audit:*),Bash(bundle exec rubocop:*),Bash(bundle exec rspec:*),Bash(bundle audit:*),Bash(bin/rspec:*),Bash(bin/rubocop:*),Bash(bin/brakeman:*),Bash(bin/tapioca:*),Bash(npm audit:*),Bash(npm run:*),Bash(npm outdated:*),Bash(npm test:*),Bash(./gradlew:*),Bash(cat tmp/maintenance/*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(diff:*),Bash(gh pr:*),Bash(gh repo:*),Bash(gh api:*),Bash(gh issue:*)'
           TOOLS="$BASE_TOOLS"
           if [ "$STACK" = "kmp" ]; then
             # KMP has no allowlisted command that can look up the latest
@@ -514,45 +518,15 @@ jobs:
           if [ -n "$ADDITIONAL_ALLOWED_TOOLS" ]; then
             TOOLS="$TOOLS,$ADDITIONAL_ALLOWED_TOOLS"
           fi
-          if [ "$LINEAR_FALLBACK" = "true" ]; then
-            TOOLS="$TOOLS,mcp__linear__*"
-          fi
 
-          # Build the MCP config file. Only declare the Linear server when
-          # linear-fallback is enabled, otherwise emit an empty config so the
-          # action does not try to spawn mcp-remote with an empty bearer.
-          # Written to a file rather than an action input because
-          # claude-code-action no longer accepts a top-level `mcp_config:` —
-          # the supported form is `claude_args: --mcp-config <path-or-json>`.
-          MCP_CONFIG_FILE=tmp/maintenance/mcp-config.json
-          if [ "$LINEAR_FALLBACK" = "true" ]; then
-            cat > "$MCP_CONFIG_FILE" <<EOF
-          {
-            "mcpServers": {
-              "linear": {
-                "command": "npx",
-                "args": [
-                  "-y",
-                  "mcp-remote",
-                  "https://mcp.linear.app/mcp",
-                  "--header",
-                  "Authorization:Bearer ${LINEAR_API_KEY:-}"
-                ]
-              }
-            }
-          }
-          EOF
-          else
-            echo '{"mcpServers":{}}' > "$MCP_CONFIG_FILE"
-          fi
-
-          # Emit prompt + tools + mcp config path as outputs.
+          # Emit prompt + tools as outputs. The risky-findings fallback now
+          # routes to a GitHub issue in luminalityai/delivery-ops via the
+          # allowlisted `gh issue create`, so no MCP server is needed.
           {
             echo 'prompt<<MAINT_PROMPT_EOF'
             cat "$PROMPT_FILE"
             echo 'MAINT_PROMPT_EOF'
             echo "allowed-tools=$TOOLS"
-            echo "mcp-config-path=$MCP_CONFIG_FILE"
           } >> "$GITHUB_OUTPUT"
 
       # ----- weekly maintenance -----
@@ -562,19 +536,16 @@ jobs:
         uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251 # v1
         timeout-minutes: ${{ inputs.claude-timeout-minutes }}
         env:
-          LINEAR_API_KEY: ${{ secrets.linear-api-key }}
+          # The agent's `gh`/`git` Bash calls authenticate with this. Defaults
+          # to the job token (scoped to the calling repo); pass delivery-ops-token
+          # for the cross-repo issue write into luminalityai/delivery-ops.
+          GH_TOKEN: ${{ secrets.delivery-ops-token || github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.claude-code-oauth-token }}
           show_full_output: true
           prompt: ${{ steps.build-prompt.outputs.prompt }}
-          # MCP config is written to a file by the build-prompt step.
-          # When linear-fallback is true it declares the Linear remote MCP
-          # server; otherwise it's an empty config so the action does not
-          # spawn mcp-remote with an empty bearer.
-          # See: https://linear.app/docs/mcp
           claude_args: >-
             --model ${{ env.CLAUDE_MODEL }}
-            --mcp-config ${{ steps.build-prompt.outputs.mcp-config-path }}
             --allowed-tools "${{ steps.build-prompt.outputs.allowed-tools }}"
 
       # ----- artifacts -----
@@ -584,12 +555,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: weekly-maintenance-${{ github.run_id }}
-          # Exclude mcp-config.json — when linear-fallback is true it
-          # contains a LINEAR_API_KEY bearer token, and artifacts have
-          # 90-day retention plus a wider visibility surface than a
-          # masked $GITHUB_OUTPUT value.
           path: |
             tmp/maintenance/
-            !tmp/maintenance/mcp-config.json
           if-no-files-found: ignore
           retention-days: 90
