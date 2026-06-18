@@ -273,24 +273,22 @@ jobs:
             echo "::warning::Failed to notify Sentry of deploy — deployment itself succeeded"
           fi
 
-      - name: Notify Slack that the release started
-        # Sibling of the Sentry-notify step above: fires once main has been
-        # promoted to the production branch + tag cut, BEFORE DigitalOcean has
-        # finished rolling it out. (Only the "release started" message exists
-        # here — luminality-web's prod caller is minimal and has no post-deploy
-        # smoke probe to hook a "live & healthy" follow-up onto, unlike
-        # fundbright-web.)
-        #
-        # Fail-soft, exactly like Sentry: skips with a ::warning:: when the
-        # Slack app isn't provisioned yet (no SLACK_BOT_TOKEN secret) or the
-        # destination channel var (SLACK_RELEASE_CHANNEL_ID) is unset. So this
-        # step is inert until those are configured — the promotion itself never
-        # depends on Slack being wired up.
-        continue-on-error: true
+      # ── Threaded Slack narration ───────────────────────────────────────
+      # Two-beat lifecycle via the shared slack-deploy-thread composite: a
+      # thread ROOT ("release started", `mode: start`) once main has been
+      # promoted + tag cut, then a single OUTCOME reply (`mode: reply`) into
+      # that thread. There's deliberately no "live & healthy" beat — this
+      # caller (luminality-web) is minimal and has no post-deploy smoke probe
+      # to hook one onto (unlike fundbright-web), so the honest outcome is
+      # "promoted, DigitalOcean is rolling it out" / a failure note based on
+      # the promote step's result. The composite soft-degrades on every path
+      # (missing token/channel → no-op; API hiccup → ::warning::, ok=false),
+      # so the promotion itself never depends on Slack being wired up — same
+      # fail-soft posture as the inline curl this replaces.
+      - name: Compose release-started thread root
+        id: slack_root_text
         if: steps.check.outputs.skip != 'true' && inputs.dry_run != true
         env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_RELEASE_CHANNEL_ID: ${{ vars.SLACK_RELEASE_CHANNEL_ID }}
           REPO: ${{ github.repository }}
           SERVER_URL: ${{ github.server_url }}
           SHA: ${{ steps.main.outputs.sha }}
@@ -298,44 +296,64 @@ jobs:
           COMMIT_COUNT: ${{ steps.check.outputs.commit_count }}
         run: |
           set -uo pipefail
-
-          if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
-            echo "::warning::SLACK_BOT_TOKEN not configured — skipping Slack release notification"
-            exit 0
-          fi
-          if [ -z "${SLACK_RELEASE_CHANNEL_ID:-}" ]; then
-            echo "::warning::SLACK_RELEASE_CHANNEL_ID var not set — skipping Slack release notification"
-            exit 0
-          fi
-
           SHORT_SHA="${SHA:0:9}"
           RELEASE_URL="${SERVER_URL}/${REPO}/releases/tag/${TAG}"
+          # mrkdwn, one fact per line (the org's slack-post discipline). Passed
+          # verbatim to the composite as `text` — it handles JSON-safety.
+          {
+            echo "text<<SLACK_EOF"
+            printf '%s\n' \
+              "🚀 *Production release started* — \`${REPO}\`" \
+              "*Tag:* <${RELEASE_URL}|${TAG}>" \
+              "*Commit:* \`${SHORT_SHA}\` (${COMMIT_COUNT} commit(s))" \
+              "*Status:* promoted to the \`production\` branch — DigitalOcean is now rolling it out."
+            echo "SLACK_EOF"
+          } >> "$GITHUB_OUTPUT"
 
-          # mrkdwn, one fact per line (the org's slack-post discipline). printf
-          # builds the multi-line text so each line stays indented under this
-          # block scalar; jq then makes it JSON-safe — no hand-escaped strings.
-          TEXT=$(printf '%s\n' \
-            "🚀 *Production release started* — \`${REPO}\`" \
-            "*Tag:* <${RELEASE_URL}|${TAG}>" \
-            "*Commit:* \`${SHORT_SHA}\` (${COMMIT_COUNT} commit(s))" \
-            "*Status:* promoted to the \`production\` branch — DigitalOcean is now rolling it out.")
+      - name: Post release thread root
+        id: slack_root
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != true
+        continue-on-error: true
+        uses: luminalityai/.github/.github/actions/slack-deploy-thread@main
+        with:
+          bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel: ${{ vars.SLACK_RELEASE_CHANNEL_ID }}
+          mode: start
+          text: ${{ steps.slack_root_text.outputs.text }}
 
-          PAYLOAD=$(jq -n \
-            --arg channel "$SLACK_RELEASE_CHANNEL_ID" \
-            --arg text "$TEXT" \
-            '{channel: $channel, text: $text, unfurl_links: false, unfurl_media: false}')
-
-          RESP=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            --data "$PAYLOAD" || true)
-
-          if [ "$(echo "$RESP" | jq -r '.ok // false')" = "true" ]; then
-            echo "Posted release-started notice to Slack channel ${SLACK_RELEASE_CHANNEL_ID}"
+      - name: Compose release-outcome reply
+        id: slack_outcome_text
+        # Mirrors Final summary's logic, but as a thread reply. Gated on a real
+        # thread root (empty when Slack is unconfigured / the root post failed),
+        # so it never strands a top-level message. Runs on always() so a failed
+        # promote still threads the bad news under the same root.
+        if: always() && steps.slack_root.outputs.thread_ts != ''
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          PROMOTE_OUTCOME: ${{ steps.promote.outcome }}
+        run: |
+          set -uo pipefail
+          if [ "$PROMOTE_OUTCOME" = "success" ]; then
+            TEXT="✅ *Promoted to \`production\`* (\`${TAG}\`) — DigitalOcean is rolling it out."
           else
-            # Never fail the promotion over a Slack hiccup — surface and move on.
-            echo "::warning::Slack release notification failed: $(echo "$RESP" | jq -r '.error // "unknown error"')"
+            TEXT="❌ *Promotion did NOT complete* — promote step outcome: \`${PROMOTE_OUTCOME:-did-not-run}\`. \`production\` was NOT advanced."
           fi
+          {
+            echo "text<<SLACK_EOF"
+            printf '%s\n' "$TEXT"
+            echo "SLACK_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post release outcome into the thread
+        if: always() && steps.slack_root.outputs.thread_ts != ''
+        continue-on-error: true
+        uses: luminalityai/.github/.github/actions/slack-deploy-thread@main
+        with:
+          bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel: ${{ vars.SLACK_RELEASE_CHANNEL_ID }}
+          mode: reply
+          thread_ts: ${{ steps.slack_root.outputs.thread_ts }}
+          text: ${{ steps.slack_outcome_text.outputs.text }}
 
       - name: Final summary
         if: always()
