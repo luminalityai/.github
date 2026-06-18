@@ -275,9 +275,10 @@ jobs:
 
       # ── Threaded Slack narration ───────────────────────────────────────
       # Two-beat lifecycle via the shared slack-deploy-thread composite: a
-      # thread ROOT ("release started", `mode: start`) once main has been
-      # promoted + tag cut, then a single OUTCOME reply (`mode: reply`) into
-      # that thread. There's deliberately no "live & healthy" beat — this
+      # thread ROOT ("release started", `mode: start`) posted on always() the
+      # moment a real release is attempted (so it covers a FAILED promote too),
+      # then a single OUTCOME reply (`mode: reply`) into that thread reporting
+      # ✅ promoted / 🔴 failed. There's deliberately no "live & healthy" beat — this
       # caller (luminality-web) is minimal and has no post-deploy smoke probe
       # to hook one onto (unlike fundbright-web), so the honest outcome is
       # "promoted, DigitalOcean is rolling it out" / a failure note based on
@@ -287,7 +288,10 @@ jobs:
       # fail-soft posture as the inline curl this replaces.
       - name: Compose release-started thread root
         id: slack_root_text
-        if: steps.check.outputs.skip != 'true' && inputs.dry_run != true
+        # always() (still gated on a real, non-dry-run release) so the thread root
+        # posts even when the promote step fails — that's what lets the outcome
+        # reply below thread a 🔴 failure under it instead of stranding nothing.
+        if: always() && steps.check.outputs.skip != 'true' && inputs.dry_run != true
         env:
           REPO: ${{ github.repository }}
           SERVER_URL: ${{ github.server_url }}
@@ -306,13 +310,13 @@ jobs:
               "🚀 *Production release started* — \`${REPO}\`" \
               "*Tag:* <${RELEASE_URL}|${TAG}>" \
               "*Commit:* \`${SHORT_SHA}\` (${COMMIT_COUNT} commit(s))" \
-              "*Status:* promoted to the \`production\` branch — DigitalOcean is now rolling it out."
+              "*Status:* promoting \`main\` to the \`production\` branch…"
             echo "SLACK_EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Post release thread root
         id: slack_root
-        if: steps.check.outputs.skip != 'true' && inputs.dry_run != true
+        if: always() && steps.check.outputs.skip != 'true' && inputs.dry_run != true
         continue-on-error: true
         uses: luminalityai/.github/.github/actions/slack-deploy-thread@main
         with:
