@@ -102,7 +102,7 @@ on:
         description: 'Space-separated globs excluded from the TODO/FIXME census.'
         required: false
         type: string
-        default: 'node_modules/** vendor/** tmp/** log/** .worktrees/** dist/** build/** coverage/** sorbet/rbi/**'
+        default: 'node_modules/** vendor/** tmp/** log/** .worktrees/** dist/** build/** coverage/** sorbet/rbi/** .maintenance-cache/**'
       timeout-minutes:
         description: 'Job-level timeout.'
         required: false
@@ -266,8 +266,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .maintenance-cache tmp/maintenance
+          # The scanner generates its own artifacts: .maintenance-cache holds the
+          # week-over-week "previous" census and tmp/maintenance holds this run's
+          # output — both contain TODO/FIXME lines. Always exclude them so the
+          # census never counts itself, regardless of the caller's
+          # todo-fixme-exclude (which an override could otherwise drop).
+          SELF_EXCLUDES='.maintenance-cache/** tmp/maintenance/**'
           GLOB_ARGS=()
-          for pattern in $EXCLUDES; do
+          for pattern in $EXCLUDES $SELF_EXCLUDES; do
             GLOB_ARGS+=(--glob "!$pattern")
           done
           # shellcheck disable=SC2086
@@ -277,7 +283,10 @@ jobs:
               "${GLOB_ARGS[@]}" $PATHS \
               > tmp/maintenance/todo-fixme.current.txt || true
           else
-            grep -rEn '\b(TODO|FIXME|XXX|HACK)\b' $PATHS \
+            # The grep fallback can't honor the full glob list, but it must at
+            # least skip the scanner's own artifact dirs (the bug this guards).
+            grep -rEn --exclude-dir=.maintenance-cache --exclude-dir=tmp \
+              '\b(TODO|FIXME|XXX|HACK)\b' $PATHS \
               > tmp/maintenance/todo-fixme.current.txt || true
           fi
           CURRENT_COUNT=$(wc -l < tmp/maintenance/todo-fixme.current.txt | tr -d ' ')
