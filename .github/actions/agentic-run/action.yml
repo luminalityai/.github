@@ -38,6 +38,14 @@ inputs:
     description: "Comma-separated tools the agent may use."
     required: false
     default: "Bash,Read,Write,Edit,Glob,Grep"
+  effort:
+    description: >
+      Reasoning effort passed to Claude Code via --effort (low | medium | high).
+      Empty default = no flag appended (unchanged). Callers pass vars.CLAUDE_EFFORT
+      (falling back to 'low') as the estate floor; coding/correctness lanes pass
+      'high'. vars.* is not readable inside a composite, so the caller supplies it.
+    required: false
+    default: ''
 
 runs:
   using: "composite"
@@ -81,4 +89,6 @@ runs:
         prompt: ${{ steps.prep.outputs.value }}
         additional_permissions: |
           actions: read
-        claude_args: '--model ${{ inputs.model }} --allowedTools "${{ inputs.allowed-tools }}"'
+        # --effort is appended only when the caller passes a non-empty `effort`
+        # (vars.* isn't readable inside a composite, so the caller supplies it).
+        claude_args: --model ${{ inputs.model }} --allowedTools "${{ inputs.allowed-tools }}"${{ inputs.effort && format(' --effort {0}', inputs.effort) || '' }}
