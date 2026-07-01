@@ -1,0 +1,22 @@
+version: 2
+
+# Dependabot config for the luminalityai/.github repository itself.
+# Keeps the SHA-pinned third-party actions in our reusable workflows
+# (claude-agent, claude-code-review, deploy-production, sentry-release,
+# reusable-weekly-maintenance, pin-check, pin-sweep) moving forward without
+# manual SHA bumps. The pin-sweep pins; Dependabot freshens — complementary.
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      timezone: "Asia/Singapore"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
