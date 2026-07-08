@@ -1,0 +1,98 @@
+name: Claude Auth Smoke
+
+# Catches a broken anthropics/claude-code-action pin BEFORE it merges — the
+# 2026-07-07 failure mode where a Dependabot-freshened pin lands on an action
+# build that 401s ("Invalid bearer token"). The normal Claude "Review gate"
+# can't catch it: it deliberately SKIPS Claude on Dependabot PRs to save budget,
+# so a bad bump passes green. This gate runs the newly-pinned action at PR head
+# and fails closed on an auth error. See rarebit-ops#119.
+#
+# Design notes (each is a footgun — do not "simplify"):
+#  - Local workflow (NOT a shared reusable): a reusable runs at @main and would
+#    test its OWN pin, not this repo's bumped pin. The probe's `uses:` below is a
+#    claude-code-action pin, so Dependabot bumps it in lockstep with the repo's
+#    other pins in the same PR.
+#  - `on: pull_request` (NOT pull_request_target): must run the PR head's workflow
+#    so the probe uses the newly-bumped pin.
+#  - Runs on every PR, gates the probe internally (no `paths:` filter): a skipped
+#    required check reports "pending" forever and hangs auto-merge. Non-bump PRs
+#    pass instantly with zero LLM spend.
+#  - Passes `github_token` to the action to skip OIDC (id-token: write is
+#    unavailable to Dependabot runs).
+#  - claude-code-action exits 0 even when auth fails (records is_error:true in
+#    execution_file) — so the probe runs with continue-on-error and a separate
+#    assert step fails the gate on outcome != success OR is_error:true.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-auth-smoke-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Claude auth smoke
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect claude-code-action pin change
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if git diff "${BASE_SHA}...${HEAD_SHA}" | grep -E '^[+-].*anthropics/claude-code-action@' >/dev/null; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require token when a pin changed (fail closed)
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            echo "::error::Pin changed but CLAUDE_CODE_OAUTH_TOKEN unavailable (add it as a Dependabot secret: gh secret set CLAUDE_CODE_OAUTH_TOKEN --org luminalityai --app dependabot --visibility all). Failing closed."
+            exit 1
+          fi
+
+      - name: Auth probe — exercise the newly-pinned action
+        id: probe
+        if: steps.detect.outputs.changed == 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@ba0aafd4308cbba7165f9f2cdb0cfbed5a3c99ce # v1.0.168
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }} # skip OIDC token minting
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: false
+          prompt: |
+            Auth smoke test — reply with exactly the single word: pong
+            Do not use any tools.
+
+      - name: Assert the probe authenticated
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          EXEC: ${{ steps.probe.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::Claude auth probe FAILED ($1) — do not merge this bump."; exit 1; }
+          [ "${PROBE_OUTCOME}" = "success" ] || fail "step outcome=${PROBE_OUTCOME}"
+          [ -n "${EXEC:-}" ] && [ -f "${EXEC}" ] || fail "no execution output produced"
+          grep -Eq '"is_error"[[:space:]]*:[[:space:]]*true' "${EXEC}" && fail "execution reported is_error=true"
+          echo "✓ Auth probe authenticated cleanly."
