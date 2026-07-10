@@ -42,7 +42,9 @@ jobs:
   promote:
     name: Promote to Production
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Must exceed the deploy-watch inner deadline (25m) + health retries + promote
+    # overhead, or the job is killed before the watch can time out cleanly.
+    timeout-minutes: 45
     environment: production
 
     env:
@@ -327,8 +329,14 @@ jobs:
           DEADLINE=$(( $(date +%s) + 1500 ))   # 25 minutes
           while :; do
             curl -sS -o get.json -H "$AUTH_HDR" "${API}/apps/${PROD_APP_ID}/deployments/${DEP_ID}" || true
-            PHASE=$(jq -r '.deployment.phase // "UNKNOWN"' get.json)
-            echo "  phase: ${PHASE}"
+            PHASE=$(jq -r '.deployment.phase // "UNKNOWN"' get.json 2>/dev/null || echo "UNKNOWN")
+            if [ "$PHASE" = "UNKNOWN" ]; then
+              # Distinguish "still deploying" from "can't reach DO" so a persistent
+              # API/credential failure isn't 25 minutes of silent looping.
+              echo "  phase: UNKNOWN — could not read deployment status from DO (transient?). Body: $(tr -d '\n' < get.json 2>/dev/null | head -c 200)"
+            else
+              echo "  phase: ${PHASE}"
+            fi
             case "$PHASE" in
               ACTIVE|ERROR|CANCELED|SUPERSEDED) break ;;
             esac
@@ -355,8 +363,12 @@ jobs:
           for i in 1 2 3 4 5 6; do
             HSTATUS=$(curl -sS --max-time 12 "${HEALTH_URL}" | jq -r '.status // "unreachable"' 2>/dev/null || echo "unreachable")
             [ "$HSTATUS" = "ok" ] && break
-            echo "  health attempt ${i}/6: ${HSTATUS} — retrying in 15s…"
-            sleep 15
+            if [ "$i" -lt 6 ]; then
+              echo "  health attempt ${i}/6: ${HSTATUS} — retrying in 15s…"
+              sleep 15
+            else
+              echo "  health attempt ${i}/6: ${HSTATUS} — no more retries."
+            fi
           done
           echo "health=$HSTATUS" >> "$GITHUB_OUTPUT"
           case "$HSTATUS" in
