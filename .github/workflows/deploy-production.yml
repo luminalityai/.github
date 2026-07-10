@@ -1,5 +1,20 @@
 name: Promote to Production
 
+# ── Production deploy model (prod is deploy_on_push=false) ─────────────────
+# STAGING's DO app has `deploy_on_push: true`, so pushing its branch deploys it.
+# PRODUCTION's DO app (507a7618-d3ec-4bdc-ab92-1d9465dcd68d, sgp1, Rarebit One)
+# has `deploy_on_push: false` on purpose — promoting `main → production` here
+# advances the branch + cuts the tag but does NOT deploy on its own. That split
+# once let a release silently not go live until caught by hand.
+#
+# So this workflow OWNS the go-live: after promoting, it triggers the production
+# DigitalOcean deployment via the DO API, watches it to a terminal phase, and
+# health-gates `/health/ready` — failing the run (loudly) if the deploy errors
+# or the app isn't serving. This mirrors the /release skill (luminality-web#816)
+# but moves it into the pipeline so go-live no longer depends on an operator.
+# Requires the org secret DIGITALOCEAN_ACCESS_TOKEN (scoped to the prod app),
+# reached via the caller's `secrets: inherit`. See delivery-ops#106.
+
 on:
   workflow_call:
     inputs:
@@ -250,6 +265,110 @@ jobs:
 
           echo "Created GitHub Release $TAG"
 
+      - name: Deploy to production (DigitalOcean) + watch to live
+        # The go-live. prod DO app is deploy_on_push=false, so the promote above
+        # does NOT deploy — we trigger it here (equivalent to
+        # `doctl apps create-deployment <app>`), watch to a terminal phase, and
+        # health-gate. This step is NOT continue-on-error: a bad deploy MUST turn
+        # the run red (the whole point of delivery-ops#106 — no silent non-deploys).
+        # Also runs on dry_run to smoke-test token+app reachability without deploying.
+        id: do_deploy
+        if: steps.check.outputs.skip != 'true'
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          PROD_APP_ID: 507a7618-d3ec-4bdc-ab92-1d9465dcd68d
+          HEALTH_URL: https://app.luminality.ai/health/ready
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -uo pipefail
+          API="https://api.digitalocean.com/v2"
+
+          # Fail LOUD (never a silent no-op) when the token is missing: production
+          # was just promoted but will NOT deploy on its own. Red run = the signal
+          # to provision the secret (delivery-ops#106) or run /release by hand.
+          if [ -z "${DO_TOKEN:-}" ]; then
+            echo "::error::DIGITALOCEAN_ACCESS_TOKEN is not set — the 'production' branch was promoted but the app was NOT deployed (prod app ${PROD_APP_ID} is deploy_on_push=false, so promoting does not deploy). Provision the org secret scoped to the prod app (delivery-ops#106), or run /release to trigger the DO deploy manually."
+            exit 1
+          fi
+
+          AUTH_HDR="Authorization: Bearer ${DO_TOKEN}"
+
+          # Preflight: can the token see the prod app? Doubles as the dry-run test.
+          APP_HTTP=$(curl -sS -o app.json -w '%{http_code}' -H "$AUTH_HDR" "${API}/apps/${PROD_APP_ID}")
+          if [ "$APP_HTTP" != "200" ]; then
+            echo "::error::DigitalOcean API returned HTTP ${APP_HTTP} for app ${PROD_APP_ID} — check the token's validity/scope. Body: $(tr -d '\n' < app.json | head -c 400)"
+            exit 1
+          fi
+          APP_NAME=$(jq -r '.app.spec.name // "unknown"' app.json)
+          echo "Authenticated to DigitalOcean; target app: ${APP_NAME} (${PROD_APP_ID})"
+
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "::notice::Dry run — token + prod app reachable; skipping create-deployment. A real run would deploy ${APP_NAME} and watch it to ACTIVE + healthy."
+            echo "phase=DRY_RUN" >> "$GITHUB_OUTPUT"
+            echo "health=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Trigger the deployment (equivalent to `doctl apps create-deployment`).
+          DEP_HTTP=$(curl -sS -o dep.json -w '%{http_code}' -X POST \
+            -H "$AUTH_HDR" -H "Content-Type: application/json" \
+            -d '{"force_build":false}' \
+            "${API}/apps/${PROD_APP_ID}/deployments")
+          if [ "$DEP_HTTP" != "200" ] && [ "$DEP_HTTP" != "201" ]; then
+            echo "::error::Failed to create production deployment (HTTP ${DEP_HTTP}). Body: $(tr -d '\n' < dep.json | head -c 400)"
+            exit 1
+          fi
+          DEP_ID=$(jq -r '.deployment.id' dep.json)
+          echo "Created production deployment ${DEP_ID}; watching to a terminal phase…"
+
+          # Poll to a terminal phase. Cap the wait so a hung deploy fails cleanly
+          # rather than running to the job timeout.
+          PHASE=""
+          DEADLINE=$(( $(date +%s) + 1500 ))   # 25 minutes
+          while :; do
+            curl -sS -o get.json -H "$AUTH_HDR" "${API}/apps/${PROD_APP_ID}/deployments/${DEP_ID}" || true
+            PHASE=$(jq -r '.deployment.phase // "UNKNOWN"' get.json)
+            echo "  phase: ${PHASE}"
+            case "$PHASE" in
+              ACTIVE|ERROR|CANCELED|SUPERSEDED) break ;;
+            esac
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "phase=$PHASE" >> "$GITHUB_OUTPUT"
+              echo "::error::Timed out (25m) waiting for production deployment ${DEP_ID} to reach a terminal phase (last: ${PHASE}). Check the DO deploy logs."
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "phase=$PHASE" >> "$GITHUB_OUTPUT"
+
+          if [ "$PHASE" != "ACTIVE" ]; then
+            echo "::error::Production deployment ${DEP_ID} ended in phase ${PHASE} — the 'production' branch is promoted but the LIVE release is the PREVIOUS build. Check DO build/deploy logs; a rollback may be warranted."
+            exit 1
+          fi
+          echo "::notice::Production deployment ${DEP_ID} is ACTIVE."
+
+          # Health gate on /health/ready. The endpoint can lag the ACTIVE phase
+          # during warm-up, so retry. Policy: ok → pass; degraded → warn but pass
+          # (app IS serving, a subsystem is degraded — matches /release); anything
+          # else (unreachable/unavailable) after retries → FAIL (app not serving).
+          HSTATUS="unreachable"
+          for i in 1 2 3 4 5 6; do
+            HSTATUS=$(curl -sS --max-time 12 "${HEALTH_URL}" | jq -r '.status // "unreachable"' 2>/dev/null || echo "unreachable")
+            [ "$HSTATUS" = "ok" ] && break
+            echo "  health attempt ${i}/6: ${HSTATUS} — retrying in 15s…"
+            sleep 15
+          done
+          echo "health=$HSTATUS" >> "$GITHUB_OUTPUT"
+          case "$HSTATUS" in
+            ok)
+              echo "::notice::Health ${HEALTH_URL} → ok" ;;
+            degraded)
+              echo "::warning::Health ${HEALTH_URL} → degraded — app is serving but a subsystem is degraded. Not failing the release; verify manually." ;;
+            *)
+              echo "::error::Health ${HEALTH_URL} → ${HSTATUS} after retries — deployment reached ACTIVE but the app is not serving healthy. Investigate; rollback may be warranted."
+              exit 1 ;;
+          esac
+
       - name: Notify Sentry of production deploy
         continue-on-error: true
         if: steps.check.outputs.skip != 'true' && inputs.dry_run != true
@@ -335,12 +454,17 @@ jobs:
         env:
           TAG: ${{ steps.tag.outputs.tag }}
           PROMOTE_OUTCOME: ${{ steps.promote.outcome }}
+          DEPLOY_OUTCOME: ${{ steps.do_deploy.outcome }}
+          DEPLOY_PHASE: ${{ steps.do_deploy.outputs.phase }}
+          HEALTH: ${{ steps.do_deploy.outputs.health }}
         run: |
           set -uo pipefail
-          if [ "$PROMOTE_OUTCOME" = "success" ]; then
-            TEXT="✅ *Promoted to \`production\`* (\`${TAG}\`) — DigitalOcean is rolling it out."
-          else
+          if [ "$PROMOTE_OUTCOME" != "success" ]; then
             TEXT="❌ *Promotion did NOT complete* — promote step outcome: \`${PROMOTE_OUTCOME:-did-not-run}\`. \`production\` was NOT advanced."
+          elif [ "$DEPLOY_OUTCOME" = "success" ]; then
+            TEXT="✅ *Live on \`production\`* (\`${TAG}\`) — DigitalOcean deploy \`${DEPLOY_PHASE:-?}\`, health \`${HEALTH:-?}\`."
+          else
+            TEXT="⚠️ *Promoted but NOT confirmed live* (\`${TAG}\`) — \`production\` advanced, but the DigitalOcean deploy did not reach ACTIVE+healthy (deploy outcome: \`${DEPLOY_OUTCOME:-did-not-run}\`, phase: \`${DEPLOY_PHASE:-n/a}\`). Investigate — a rollback may be warranted."
           fi
           {
             echo "text<<SLACK_EOF"
@@ -368,15 +492,19 @@ jobs:
           DRY_RUN="${{ inputs.dry_run }}"
 
           PROMOTE_OUTCOME="${{ steps.promote.outcome }}"
+          DEPLOY_OUTCOME="${{ steps.do_deploy.outcome }}"
+          DEPLOY_PHASE="${{ steps.do_deploy.outputs.phase }}"
+          HEALTH="${{ steps.do_deploy.outputs.health }}"
 
           if [ "$SKIP" = "true" ]; then
             echo "::notice::No-op — production is already at main ($SHA)"
           elif [ "$DRY_RUN" = "true" ]; then
-            echo "::notice::Dry run complete — would have promoted $TAG ($SHA)"
-          elif [ "$PROMOTE_OUTCOME" = "success" ]; then
-            # Only claim success once the promote push actually landed — never
-            # announce "Promoted" off the back of always() when the push failed.
-            echo "::notice::Promoted $TAG ($SHA) to production"
-          else
+            echo "::notice::Dry run complete — would have promoted $TAG ($SHA); DO preflight: ${DEPLOY_OUTCOME:-skipped}"
+          elif [ "$PROMOTE_OUTCOME" != "success" ]; then
             echo "::error::Promotion did NOT complete — promote step outcome: '${PROMOTE_OUTCOME:-did-not-run}'. production was NOT advanced."
+          elif [ "$DEPLOY_OUTCOME" = "success" ]; then
+            # Only claim "live" once the DO deploy actually reached ACTIVE.
+            echo "::notice::Live on production — $TAG ($SHA), DO phase ${DEPLOY_PHASE:-?}, health ${HEALTH:-?}"
+          else
+            echo "::error::Promoted $TAG ($SHA) but the production DO deploy did NOT confirm live (deploy outcome: '${DEPLOY_OUTCOME:-did-not-run}', phase: '${DEPLOY_PHASE:-n/a}'). The live release may be the previous build — investigate."
           fi
