@@ -2,8 +2,8 @@ name: Promote to Production
 
 # ── Production deploy model (prod is deploy_on_push=false) ─────────────────
 # STAGING's DO app has `deploy_on_push: true`, so pushing its branch deploys it.
-# PRODUCTION's DO app (507a7618-d3ec-4bdc-ab92-1d9465dcd68d, sgp1, Rarebit One)
-# has `deploy_on_push: false` on purpose — promoting `main → production` here
+# PRODUCTION's DO app (5546b28f-75c8-492f-a237-a15867be488c, sgp1, Luminality x
+# Rarebit team) has `deploy_on_push: false` on purpose — promoting `main → production`
 # advances the branch + cuts the tag but does NOT deploy on its own. That split
 # once let a release silently not go live until caught by hand.
 #
@@ -278,7 +278,7 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         env:
           DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-          PROD_APP_ID: 507a7618-d3ec-4bdc-ab92-1d9465dcd68d
+          PROD_APP_ID: 5546b28f-75c8-492f-a237-a15867be488c
           HEALTH_URL: https://app.luminality.ai/health/ready
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
