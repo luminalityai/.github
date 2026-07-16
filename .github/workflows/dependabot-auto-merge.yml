@@ -23,13 +23,19 @@ on:
 
 jobs:
   auto-merge:
-    # Act on Dependabot's own PRs and on autonomous SRE engine PRs (identified
-    # by their head-ref prefix).
+    # Act on Dependabot's own PRs and on autonomous SRE engine PRs. The engine
+    # path gates on BOTH the head-ref prefix AND the actor being the release-bot
+    # App (luminality-release-bot[bot]) — the branch prefix alone is spoofable:
+    # anyone who can push a branch named ci-fix/* (etc.) would otherwise get
+    # native auto-merge enabled with no human review. Requiring the App actor
+    # closes that branch-name-spoofing hole, since only the engine workflows can
+    # open PRs as the release-bot.
     if: >-
       github.actor == 'dependabot[bot]' ||
-      startsWith(github.event.pull_request.head.ref, 'issue-worker/') ||
-      startsWith(github.event.pull_request.head.ref, 'ci-fix/') ||
-      startsWith(github.event.pull_request.head.ref, 'sentry-autofix/')
+      ( github.actor == 'luminality-release-bot[bot]' && (
+        startsWith(github.event.pull_request.head.ref, 'issue-worker/') ||
+        startsWith(github.event.pull_request.head.ref, 'ci-fix/') ||
+        startsWith(github.event.pull_request.head.ref, 'sentry-autofix/') ) )
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -55,7 +61,10 @@ jobs:
           gh pr merge --auto --squash "$PR_URL" || echo "::warning::auto-merge not enabled for $PR_URL"
 
       - name: Enable auto-merge — autonomous SRE engine PR
-        if: github.actor != 'dependabot[bot]'
+        # Positive actor check (not just "!= dependabot"): only the release-bot
+        # App may take the engine path, so a spoofed ci-fix/* branch from any
+        # other actor can never reach this step.
+        if: github.actor == 'luminality-release-bot[bot]'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
