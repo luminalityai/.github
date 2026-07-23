@@ -8,10 +8,11 @@ name: Auto-lander (Dependabot + autonomous engine PRs)
 #
 #   1. Dependabot PRs — read the semver update-type via fetch-metadata, then
 #      enable auto-merge for patch + minor. Major bumps are left for a human.
-#   2. Autonomous SRE engine PRs — branches prefixed issue-worker/, ci-fix/, or
-#      sentry-autofix/, opened by the SRE engine workflows. These are already
-#      vetted by the engine's own guardrails before opening, so they get
-#      auto-merge enabled directly (no semver gate).
+#   2. Autonomous release-bot PRs — branches prefixed issue-worker/, ci-fix/,
+#      sentry-autofix/ (the SRE engine workflows) or legal-sync/ (the
+#      luminality-static legal-document sync). These are already vetted by the
+#      opening workflow's own guardrails, so they get auto-merge enabled
+#      directly (no semver gate).
 #
 # Safety: the caller fires on pull_request_target (writable token), but this
 # workflow checks out no PR code and runs no PR bundle — it only reads metadata
@@ -23,19 +24,20 @@ on:
 
 jobs:
   auto-merge:
-    # Act on Dependabot's own PRs and on autonomous SRE engine PRs. The engine
+    # Act on Dependabot's own PRs and on autonomous release-bot PRs. The bot
     # path gates on BOTH the head-ref prefix AND the actor being the release-bot
     # App (luminality-release-bot[bot]) — the branch prefix alone is spoofable:
     # anyone who can push a branch named ci-fix/* (etc.) would otherwise get
     # native auto-merge enabled with no human review. Requiring the App actor
-    # closes that branch-name-spoofing hole, since only the engine workflows can
+    # closes that branch-name-spoofing hole, since only these workflows can
     # open PRs as the release-bot.
     if: >-
       github.actor == 'dependabot[bot]' ||
       ( github.actor == 'luminality-release-bot[bot]' && (
         startsWith(github.event.pull_request.head.ref, 'issue-worker/') ||
         startsWith(github.event.pull_request.head.ref, 'ci-fix/') ||
-        startsWith(github.event.pull_request.head.ref, 'sentry-autofix/') ) )
+        startsWith(github.event.pull_request.head.ref, 'sentry-autofix/') ||
+        startsWith(github.event.pull_request.head.ref, 'legal-sync/') ) )
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -60,10 +62,10 @@ jobs:
           gh pr review --approve "$PR_URL" || true
           gh pr merge --auto --squash "$PR_URL" || echo "::warning::auto-merge not enabled for $PR_URL"
 
-      - name: Enable auto-merge — autonomous SRE engine PR
+      - name: Enable auto-merge — autonomous release-bot PR
         # Positive actor check (not just "!= dependabot"): only the release-bot
-        # App may take the engine path, so a spoofed ci-fix/* branch from any
-        # other actor can never reach this step.
+        # App may take this path, so a spoofed ci-fix/* branch from any other
+        # actor can never reach this step.
         if: github.actor == 'luminality-release-bot[bot]'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -71,7 +73,8 @@ jobs:
         run: |
           # Engine PRs (issue-worker/*, ci-fix/*, sentry-autofix/*) are already
           # vetted by the engine's own guardrails (path guards, diff-line cap,
-          # test gate, signed commit) before opening — so just enable squash
-          # auto-merge and let the repo's required-checks gate do the rest, the
-          # same as Dependabot.
+          # test gate, signed commit) before opening, and legal-sync/* carries
+          # only text copied verbatim from the published legal_documents rows —
+          # so just enable squash auto-merge and let the repo's required-checks
+          # gate do the rest, the same as Dependabot.
           gh pr merge --auto --squash "$PR_URL" || echo "::warning::auto-merge not enabled for $PR_URL"
