@@ -289,7 +289,7 @@ jobs:
           # was just promoted but will NOT deploy on its own. Red run = the signal
           # to provision the secret (delivery-ops#106) or run /release by hand.
           if [ -z "${DO_TOKEN:-}" ]; then
-            echo "::error::DIGITALOCEAN_ACCESS_TOKEN is not set — the 'production' branch was promoted but the app was NOT deployed (prod app ${PROD_APP_ID} is deploy_on_push=false, so promoting does not deploy). Provision the org secret scoped to the prod app (delivery-ops#106), or run /release to trigger the DO deploy manually."
+            echo "::error::DIGITALOCEAN_ACCESS_TOKEN is not set — the 'production' branch was promoted but the app was NOT deployed (prod app ${PROD_APP_ID} is deploy_on_push=false, so promoting does not deploy). Provision it as a repo or org secret scoped to the prod app (delivery-ops#106), or run /release to trigger the DO deploy manually."
             exit 1
           fi
 
