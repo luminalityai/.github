@@ -21,7 +21,8 @@ invocation here and it lands once for all consumers in this org.
     prompt-file: .github/prompts/<your-prompt>.md
     claude-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
     github-token: ${{ github.token }}            # or an app token for cross-repo writes
-    model: ${{ vars.CLAUDE_MODEL || 'claude-opus-4-8' }}
+    model: ${{ vars.CLAUDE_MODEL || 'claude-sonnet-5' }}
+    effort: ${{ vars.CLAUDE_EFFORT || 'medium' }}
     allowed-tools: "Bash,Read,Write,Edit,Glob,Grep"
 ```
 
@@ -33,7 +34,8 @@ invocation here and it lands once for all consumers in this org.
 | `prompt-file` | no | `""` | Path to a prompt file. Preferred over `prompt`. |
 | `claude-oauth-token` | **yes** | — | `CLAUDE_CODE_OAUTH_TOKEN` (subscription auth). |
 | `github-token` | no | job token | Pass an app token for cross-repo writes; defaults to `github.token`. |
-| `model` | no | `claude-opus-4-8` | Pass `vars.CLAUDE_MODEL \|\| 'claude-opus-4-8'`. |
+| `model` | no | `claude-sonnet-5` | Pass `vars.CLAUDE_MODEL \|\| 'claude-sonnet-5'`. |
+| `effort` | no | `""` (no flag) | `low \| medium \| high \| xhigh \| max`. Pass `vars.CLAUDE_EFFORT` as the estate floor; coding/correctness lanes pass `high` or above. `vars.*` is unreadable inside a composite, so the caller must supply it. |
 | `allowed-tools` | no | `Bash,Read,Write,Edit,Glob,Grep` | Comma-separated allowed tools. |
 
 The action assembles the prompt with a hardened heredoc (random delimiter,

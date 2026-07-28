@@ -7,7 +7,10 @@ env:
   # Single source of truth for the Claude model across this repo's Claude
   # workflows. Override org-wide via the CLAUDE_MODEL Actions variable; the
   # literal is a safe fallback so an unset var can't yield an empty --model.
-  CLAUDE_MODEL: "${{ vars.CLAUDE_MODEL || 'claude-opus-4-8' }}"
+  CLAUDE_MODEL: "${{ vars.CLAUDE_MODEL || 'claude-sonnet-5' }}"
+  # Reasoning effort, same pattern. Claude 5 models hold review accuracy at
+  # lower effort, so the estate floor is a var rather than a hardcoded 'high'.
+  CLAUDE_EFFORT: "${{ vars.CLAUDE_EFFORT || 'high' }}"
 
 jobs:
   claude_review:
@@ -81,4 +84,4 @@ jobs:
           # reasoning from `gh pr diff` alone. Deliberately read-only — no Edit
           # or mutating Bash — so the workflow stays fork-safe and resistant to
           # prompt injection from untrusted PR content.
-          claude_args: '--model ${{ env.CLAUDE_MODEL }} --allowed-tools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)" --effort high'
+          claude_args: '--model ${{ env.CLAUDE_MODEL }} --allowed-tools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)" --effort ${{ env.CLAUDE_EFFORT }}'
