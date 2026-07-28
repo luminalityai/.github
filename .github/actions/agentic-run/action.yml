@@ -31,19 +31,20 @@ inputs:
     required: false
     default: ""
   model:
-    description: "Claude model (e.g. claude-opus-4-8)."
+    description: "Claude model (e.g. claude-sonnet-5)."
     required: false
-    default: "claude-opus-4-8"
+    default: "claude-sonnet-5"
   allowed-tools:
     description: "Comma-separated tools the agent may use."
     required: false
     default: "Bash,Read,Write,Edit,Glob,Grep"
   effort:
     description: >
-      Reasoning effort passed to Claude Code via --effort (low | medium | high).
-      Empty default = no flag appended (unchanged). Callers pass vars.CLAUDE_EFFORT
-      (falling back to 'low') as the estate floor; coding/correctness lanes pass
-      'high'. vars.* is not readable inside a composite, so the caller supplies it.
+      Reasoning effort passed to Claude Code via --effort
+      (low | medium | high | xhigh | max). Empty default = no flag appended.
+      Callers pass vars.CLAUDE_EFFORT as the estate floor; coding/correctness
+      lanes pass 'high' or above. vars.* is not readable inside a composite, so
+      the caller supplies it.
     required: false
     default: ''
 
