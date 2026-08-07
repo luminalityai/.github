@@ -2,10 +2,17 @@ name: Promote to Production
 
 # ── Production deploy model (prod is deploy_on_push=false) ─────────────────
 # STAGING's DO app has `deploy_on_push: true`, so pushing its branch deploys it.
-# PRODUCTION's DO app (5546b28f-75c8-492f-a237-a15867be488c, sgp1, Luminality x
-# Rarebit team) has `deploy_on_push: false` on purpose — promoting `main → production`
-# advances the branch + cuts the tag but does NOT deploy on its own. That split
-# once let a release silently not go live until caught by hand.
+# The PRODUCTION DO app has `deploy_on_push: false` on purpose — promoting
+# `main → production` advances the branch + cuts the tag but does NOT deploy on
+# its own. That split once let a release silently not go live until caught by hand.
+#
+# The production app is identified by the REQUIRED-IN-PRACTICE `do_production_app_id`
+# input, supplied by the caller. It is deliberately NOT hardcoded here: this repo is
+# a candidate for being made public (its rarebit-one and sidekick-labs counterparts
+# already are), and a DO app UUID is infrastructure identification that belongs in
+# the private caller, not in a shared reusable. The input is declared OPTIONAL so
+# adding it did not break the existing caller, but an empty value fails LOUD below
+# rather than deploying nothing — same contract as the missing-token check.
 #
 # So this workflow OWNS the go-live: after promoting, it triggers the production
 # DigitalOcean deployment via the DO API, watches it to a terminal phase, and
@@ -24,6 +31,14 @@ on:
       sentry_project:
         required: true
         type: string
+      do_production_app_id:
+        description: >-
+          DigitalOcean app ID of the PRODUCTION app. Optional only so that adding it
+          did not break the existing caller; an empty value fails the deploy loudly.
+          Pass it from the (private) calling repo — do not hardcode it here.
+        required: false
+        type: string
+        default: ""
       dry_run:
         required: false
         type: boolean
@@ -278,12 +293,21 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         env:
           DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-          PROD_APP_ID: 5546b28f-75c8-492f-a237-a15867be488c
+          PROD_APP_ID: ${{ inputs.do_production_app_id }}
           HEALTH_URL: https://app.luminality.ai/health/ready
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -uo pipefail
           API="https://api.digitalocean.com/v2"
+
+          # Same loud-failure contract as the token check: production has just been
+          # promoted and will NOT deploy on its own, so a missing app ID must turn the
+          # run red rather than quietly skip the deploy. This replaces a hardcoded
+          # UUID — the caller now supplies it (see the header for why).
+          if [ -z "${PROD_APP_ID:-}" ]; then
+            echo "::error::do_production_app_id was not passed by the caller — the 'production' branch was promoted but the app was NOT deployed (prod is deploy_on_push=false, so promoting does not deploy). Add 'do_production_app_id: <uuid>' to the caller's with: block."
+            exit 1
+          fi
 
           # Fail LOUD (never a silent no-op) when the token is missing: production
           # was just promoted but will NOT deploy on its own. Red run = the signal
