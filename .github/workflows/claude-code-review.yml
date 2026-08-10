@@ -50,7 +50,7 @@ jobs:
 
       - name: Run Claude Code Review
         if: steps.token-check.outputs.skip != 'true' && github.event.pull_request.user.login != 'dependabot[bot]'
-        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183 (auth: older bundled CLI 401s on OAuth tokens after the 2026-07-07 Anthropic auth change; see rarebit-ops#119)
+        uses: anthropics/claude-code-action@1623c36729ac1cd5895198cded705a287de7db79 # v1.0.183 (auth: older bundled CLI 401s on OAuth tokens after the 2026-07-07 Anthropic auth change; see rarebit-ops#119)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Pass the default Actions token explicitly. Without a github_token the

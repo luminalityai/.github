@@ -256,7 +256,7 @@ jobs:
 
       - name: Set up Gradle
         if: ${{ inputs.stack == 'kmp' }}
-        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
       # ----- TODO/FIXME census (week-over-week diff via cache) -----
 
@@ -631,7 +631,7 @@ jobs:
 
       - name: Weekly maintenance
         id: maintenance
-        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183 (auth: older bundled CLI 401s on OAuth tokens after the 2026-07-07 Anthropic auth change; see rarebit-ops#119)
+        uses: anthropics/claude-code-action@1623c36729ac1cd5895198cded705a287de7db79 # v1.0.183 (auth: older bundled CLI 401s on OAuth tokens after the 2026-07-07 Anthropic auth change; see rarebit-ops#119)
         timeout-minutes: ${{ inputs.claude-timeout-minutes }}
         env:
           # The agent's `gh`/`git` Bash calls authenticate with this. Precedence:
