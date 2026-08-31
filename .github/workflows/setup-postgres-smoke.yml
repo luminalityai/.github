@@ -16,6 +16,9 @@ on:
       - ".github/workflows/setup-postgres-smoke.yml"
   workflow_dispatch:
 
+# Note: the consuming repo must be authorised on the org's `jumpdrive-broker`
+# runner group, or the jdb leg queues forever with no runner (see PR history).
+
 permissions:
   contents: read
 
