@@ -1,12 +1,18 @@
 # Proves the org-shared setup-postgres composite actually stands a root-free
-# postgres up AND answers real SQL — on BOTH lanes it must support:
-#   - jdb           : unprivileged rootless-podman broker runner (the hard case)
-#   - ubuntu-latest : GitHub-hosted (must keep working unchanged)
+# postgres up AND answers real SQL on GitHub-hosted ubuntu-latest.
+#
+# WHY NO jdb LEG HERE: this `.github` repo is PUBLIC, and the broker's tenant
+# policy refuses public repositories on the self-hosted (home-network) fleet — a
+# self-hosted runner reachable from a fork PR is the classic RCE path. So the
+# broker returns `public_repository` and a jdb job could never place here. The
+# jdb proof therefore lives in a PRIVATE consumer (the luminality-web
+# demonstrator); the action's root-free bring-up is additionally verified inside
+# the actual jumpdrive-ci-runner image on amd64 + arm64 (see the README).
 #
 # Runs only when the action or this workflow changes (paths filter) so it never
 # taxes unrelated PRs, plus on-demand via workflow_dispatch. The `pg` client is
-# installed per-run via npm (Node is present on both lanes) precisely because
-# zonky ships no psql — this asserts an app-style libpq connection works.
+# installed per-run via npm (Node is present) precisely because zonky ships no
+# psql — this asserts an app-style libpq connection works.
 name: setup-postgres smoke
 
 on:
@@ -16,19 +22,12 @@ on:
       - ".github/workflows/setup-postgres-smoke.yml"
   workflow_dispatch:
 
-# Note: the consuming repo must be authorised on the org's `jumpdrive-broker`
-# runner group, or the jdb leg queues forever with no runner (see PR history).
-
 permissions:
   contents: read
 
 jobs:
   smoke:
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-latest, jdb]
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
