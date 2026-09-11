@@ -22,6 +22,10 @@ on:
       - ".github/workflows/setup-postgres-smoke.yml"
   workflow_dispatch:
 
+concurrency:
+  group: setup-postgres-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
