@@ -32,15 +32,13 @@ concurrency:
 jobs:
   sentry_release:
     name: Create Sentry Release
-    # RUNNER. In a called workflow `vars` resolve from the CALLER repo, so a
-    # caller that routes its post-merge jobs with RUNNER_LABEL (luminality-web:
-    # jdb) runs this there too; a caller that sets nothing stays on
-    # 'ubuntu-latest'. Not a PR check (push-to-main only), so GHA-014 does not
-    # apply. The frontend path runs setup-node first, so `npm install -g` lands
-    # in the (runner-writable) tool cache on an unprivileged jdb runner.
-    #   gh variable delete RUNNER_LABEL --repo luminalityai/<caller>   # revert (moves all RUNNER_LABEL jobs)
-    # ONE label, never a comma-separated list (a comma value matches no runner).
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    # HOSTED ON PURPOSE -- do not route to the homelab `jdb` fleet. The backend
+    # path uses getsentry/action-release, a DOCKER container action, and the
+    # runner pulls every container action's image at job SETUP, even when that
+    # step is skipped (has_frontend: true). The jdb image has no docker, so the
+    # job dies before its first step with `docker: command not found` (seen on
+    # luminality-web run 35963401157, 2026-09-24).
+    runs-on: ubuntu-latest
     timeout-minutes: 10
 
     env:
