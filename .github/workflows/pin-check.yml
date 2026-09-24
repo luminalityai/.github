@@ -64,8 +64,8 @@ jobs:
   pin-check:
     name: Actions pinning gate
     # RUNNER. In a called workflow `vars` resolve from the CALLER repo, so this
-    # reads each caller's own setting. It is a DEDICATED variable, not
-    # RUNNER_LABEL, on purpose:
+    # reads each caller's own setting. It is a DEDICATED variable
+    # (RUNNER_LABELS_LIGHT), not RUNNER_LABEL, on purpose:
     #
     #   * `Actions pinning gate` is a REQUIRED PR check in every calling repo.
     #     GHA-014 (luminality-web#1143) keeps required PR checks on hosted
@@ -79,11 +79,17 @@ jobs:
     #
     # So UNSET everywhere -> 'ubuntu-latest'. Opting a repo in is a deliberate,
     # per-repo acceptance of the GHA-014 trade-off:
-    #   gh variable set    RUNNER_LABEL_LIGHT --body jdb --repo luminalityai/<repo>
-    #   gh variable delete RUNNER_LABEL_LIGHT --repo luminalityai/<repo>   # instant revert
-    # ONE label, never a comma-separated list (a comma value matches no runner).
+    # 🔴 NEVER a bare `jdb`. A bare `runs-on: jdb` job can be taken by the macOS
+    # runner the broker mints for `[jdb, macos]` iOS jobs -- GitHub matches a job
+    # to ANY runner whose labels are a superset of its own (delivery-ops#420).
+    # Opt in with a JSON ARRAY that names the OS, e.g. '["jdb","linux"]': `linux`
+    # makes the broker require a Linux worker and is minted into the runner's
+    # labels, so a macOS runner can never take the job. fromJSON of the quoted
+    # fallback is the plain string 'ubuntu-latest'.
+    #   gh variable set    RUNNER_LABELS_LIGHT --body '["jdb","linux"]' --repo luminalityai/<repo>
+    #   gh variable delete RUNNER_LABELS_LIGHT --repo luminalityai/<repo>   # instant revert
     # Install steps below are unprivileged-runner safe (no /usr/local writes).
-    runs-on: ${{ vars.RUNNER_LABEL_LIGHT || 'ubuntu-latest' }}
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS_LIGHT || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
       contents: read

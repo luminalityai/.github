@@ -49,15 +49,19 @@ env:
 jobs:
   plan:
     name: Plan target repos
-    # RUNNER, indirected so this org-internal beat can move to the homelab `jdb`
-    # fleet WITHOUT editing this file. UNSET -> 'ubuntu-latest'.
-    #   gh variable set    RUNNER_LABEL --body jdb --repo luminalityai/.github
-    #   gh variable delete RUNNER_LABEL --repo luminalityai/.github   # instant revert
+    # RUNNER -- HOSTED unless RUNNER_LABELS_LINUX is set on this repo.
+    # 🔴 NEVER a bare `jdb`. A bare `runs-on: jdb` job can be taken by the macOS
+    # runner the broker mints for `[jdb, macos]` iOS jobs -- GitHub matches a job
+    # to ANY runner whose labels are a superset of its own (delivery-ops#420).
+    # Opt in with a JSON ARRAY that names the OS, e.g. '["jdb","linux"]': `linux`
+    # makes the broker require a Linux worker and is minted into the runner's
+    # labels, so a macOS runner can never take the job. fromJSON of the quoted
+    # fallback is the plain string 'ubuntu-latest'.
     # Precondition: the jumpdrive-broker runner group must admit luminalityai/.github
     # first -- otherwise the job queues forever with no red check.
-    # ONE label, never a comma-separated list -- `runs-on:` reads a scalar as a
-    # SINGLE label, so a comma value matches no runner and the job queues forever.
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    #   gh variable set    RUNNER_LABELS_LINUX --body '["jdb","linux"]' --repo luminalityai/.github
+    #   gh variable delete RUNNER_LABELS_LINUX --repo luminalityai/.github   # instant revert
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS_LINUX || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
       issues: read # alert-job gate: look up an open beat-failure issue
@@ -125,15 +129,19 @@ jobs:
     name: Pin ${{ matrix.repo }}
     needs: plan
     if: ${{ needs.plan.outputs.count != '0' && inputs.dry_run != true }}
-    # RUNNER, indirected so this org-internal beat can move to the homelab `jdb`
-    # fleet WITHOUT editing this file. UNSET -> 'ubuntu-latest'.
-    #   gh variable set    RUNNER_LABEL --body jdb --repo luminalityai/.github
-    #   gh variable delete RUNNER_LABEL --repo luminalityai/.github   # instant revert
+    # RUNNER -- HOSTED unless RUNNER_LABELS_LINUX is set on this repo.
+    # 🔴 NEVER a bare `jdb`. A bare `runs-on: jdb` job can be taken by the macOS
+    # runner the broker mints for `[jdb, macos]` iOS jobs -- GitHub matches a job
+    # to ANY runner whose labels are a superset of its own (delivery-ops#420).
+    # Opt in with a JSON ARRAY that names the OS, e.g. '["jdb","linux"]': `linux`
+    # makes the broker require a Linux worker and is minted into the runner's
+    # labels, so a macOS runner can never take the job. fromJSON of the quoted
+    # fallback is the plain string 'ubuntu-latest'.
     # Precondition: the jumpdrive-broker runner group must admit luminalityai/.github
     # first -- otherwise the job queues forever with no red check.
-    # ONE label, never a comma-separated list -- `runs-on:` reads a scalar as a
-    # SINGLE label, so a comma value matches no runner and the job queues forever.
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    #   gh variable set    RUNNER_LABELS_LINUX --body '["jdb","linux"]' --repo luminalityai/.github
+    #   gh variable delete RUNNER_LABELS_LINUX --repo luminalityai/.github   # instant revert
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS_LINUX || '"ubuntu-latest"') }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
