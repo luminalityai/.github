@@ -49,14 +49,40 @@ env:
 jobs:
   plan:
     name: Plan target repos
-    runs-on: ubuntu-latest
+    # RUNNER, indirected so this org-internal beat can move to the homelab `jdb`
+    # fleet WITHOUT editing this file. UNSET -> 'ubuntu-latest'.
+    #   gh variable set    RUNNER_LABEL --body jdb --repo luminalityai/.github
+    #   gh variable delete RUNNER_LABEL --repo luminalityai/.github   # instant revert
+    # Precondition: the jumpdrive-broker runner group must admit luminalityai/.github
+    # first -- otherwise the job queues forever with no red check.
+    # ONE label, never a comma-separated list -- `runs-on:` reads a scalar as a
+    # SINGLE label, so a comma value matches no runner and the job queues forever.
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
+      issues: read # alert-job gate: look up an open beat-failure issue
       contents: read
     outputs:
+      beat_issue_open: ${{ steps.beat.outputs.open }}
       matrix: ${{ steps.repos.outputs.matrix }}
       count: ${{ steps.repos.outputs.count }}
     steps:
+      # Alert-job gate. `alert` below used to run on EVERY beat (a whole runner
+      # spin-up, billed as a full minute) just to find nothing to do on a clean
+      # run. It only has work when a needed job FAILED, or when a job succeeded
+      # and a beat-failure issue is open to close. This step answers the second
+      # question so `alert` can be skipped otherwise. Fail-safe: a lookup error
+      # leaves the output unset / "true", so `alert` still runs, and `alert`
+      # re-checks everything itself -- its behaviour is unchanged.
+      - name: Look up an open beat-failure issue (alert-job gate)
+        id: beat
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          N="$(gh issue list --search '"beat failure: pin-sweep" in:title' --state open --json number --jq '.[0].number // empty')" || N="lookup-failed"
+          if [ -z "$N" ]; then echo "open=false" >> "$GITHUB_OUTPUT"; else echo "open=true" >> "$GITHUB_OUTPUT"; fi
       # Read-only mint over all installed repos, just to enumerate them.
       - name: Mint release-bot token (enumerate)
         id: tok
@@ -99,7 +125,15 @@ jobs:
     name: Pin ${{ matrix.repo }}
     needs: plan
     if: ${{ needs.plan.outputs.count != '0' && inputs.dry_run != true }}
-    runs-on: ubuntu-latest
+    # RUNNER, indirected so this org-internal beat can move to the homelab `jdb`
+    # fleet WITHOUT editing this file. UNSET -> 'ubuntu-latest'.
+    #   gh variable set    RUNNER_LABEL --body jdb --repo luminalityai/.github
+    #   gh variable delete RUNNER_LABEL --repo luminalityai/.github   # instant revert
+    # Precondition: the jumpdrive-broker runner group must admit luminalityai/.github
+    # first -- otherwise the job queues forever with no red check.
+    # ONE label, never a comma-separated list -- `runs-on:` reads a scalar as a
+    # SINGLE label, so a comma value matches no runner and the job queues forever.
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -141,8 +175,13 @@ jobs:
             "https://github.com/suzuki-shunsuke/pinact/releases/download/v${PINACT_VERSION}/pinact_linux_amd64.tar.gz"
           echo "${PINACT_SHA256}  pinact.tar.gz" | sha256sum -c -
           tar -xzf pinact.tar.gz pinact
-          install -m 0755 pinact /usr/local/bin/pinact
-          pinact --version
+          # Into RUNNER_TEMP, not /usr/local/bin: self-hosted `jdb` runners run
+          # jobs as an unprivileged user with no sudo, so /usr/local is read-only
+          # there. Identical on hosted runners.
+          mkdir -p "${RUNNER_TEMP}/bin"
+          install -m 0755 pinact "${RUNNER_TEMP}/bin/pinact"
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+          "${RUNNER_TEMP}/bin/pinact" --version
 
       - name: Synthesize pinact config (owner-scoped, runtime)
         env:
@@ -259,7 +298,10 @@ jobs:
   # make the missed sweep visible as one deduped issue; clear it on recovery.
   alert:
     needs: [plan, sweep]
-    if: ${{ always() }}
+    # Runs only when there is something to do: a needed job failed (open or
+    # comment the issue), or `plan` saw an open beat-failure issue that a
+    # success may close. `!= 'false'` so a missing/failed lookup still runs it.
+    if: ${{ always() && (contains(needs.*.result, 'failure') || needs.plan.outputs.beat_issue_open != 'false') }}
     runs-on: ubuntu-latest
     permissions:
       issues: write

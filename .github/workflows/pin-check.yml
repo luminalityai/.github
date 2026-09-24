@@ -63,7 +63,27 @@ env:
 jobs:
   pin-check:
     name: Actions pinning gate
-    runs-on: ubuntu-latest
+    # RUNNER. In a called workflow `vars` resolve from the CALLER repo, so this
+    # reads each caller's own setting. It is a DEDICATED variable, not
+    # RUNNER_LABEL, on purpose:
+    #
+    #   * `Actions pinning gate` is a REQUIRED PR check in every calling repo.
+    #     GHA-014 (luminality-web#1143) keeps required PR checks on hosted
+    #     runners, so a busy/offline homelab can never leave a PR blocked on a
+    #     job stuck `queued` with nothing red. Several callers (luminality-web,
+    #     -static, -sre) already set RUNNER_LABEL=jdb for their own jobs; reading
+    #     RUNNER_LABEL here would silently drag this required gate onto the fleet.
+    #   * luminality-ui (PUBLIC) cannot use the jdb group at all. It inlines its
+    #     own gate today, but any caller that never sets the variable stays on
+    #     'ubuntu-latest' regardless.
+    #
+    # So UNSET everywhere -> 'ubuntu-latest'. Opting a repo in is a deliberate,
+    # per-repo acceptance of the GHA-014 trade-off:
+    #   gh variable set    RUNNER_LABEL_LIGHT --body jdb --repo luminalityai/<repo>
+    #   gh variable delete RUNNER_LABEL_LIGHT --repo luminalityai/<repo>   # instant revert
+    # ONE label, never a comma-separated list (a comma value matches no runner).
+    # Install steps below are unprivileged-runner safe (no /usr/local writes).
+    runs-on: ${{ vars.RUNNER_LABEL_LIGHT || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -117,7 +137,12 @@ jobs:
         if: steps.prep.outputs.paths != ''
         env:
           ZIZMOR_VERSION: ${{ inputs.zizmor-version }}
-        run: pipx install "zizmor==${ZIZMOR_VERSION}"
+        run: |
+          set -euo pipefail
+          pipx install "zizmor==${ZIZMOR_VERSION}"
+          # Hosted runners set PIPX_BIN_DIR (already on PATH); a self-hosted
+          # `jdb` runner falls back to ~/.local/bin, which is not.
+          echo "${PIPX_BIN_DIR:-$HOME/.local/bin}" >> "$GITHUB_PATH"
 
       - name: zizmor — full audit (informational, non-blocking)
         if: steps.prep.outputs.paths != ''
@@ -174,8 +199,13 @@ jobs:
             "https://github.com/suzuki-shunsuke/pinact/releases/download/v${PINACT_VERSION}/pinact_linux_amd64.tar.gz"
           echo "${PINACT_SHA256}  pinact.tar.gz" | sha256sum -c -
           tar -xzf pinact.tar.gz pinact
-          install -m 0755 pinact /usr/local/bin/pinact
-          pinact --version
+          # Into RUNNER_TEMP, not /usr/local/bin: self-hosted `jdb` runners run
+          # jobs as an unprivileged user with no sudo, so /usr/local is read-only
+          # there. Identical on hosted runners.
+          mkdir -p "${RUNNER_TEMP}/bin"
+          install -m 0755 pinact "${RUNNER_TEMP}/bin/pinact"
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+          "${RUNNER_TEMP}/bin/pinact" --version
 
       - name: pinact — verify pins (runtime-synthesized owner config)
         if: steps.prep.outputs.paths != ''

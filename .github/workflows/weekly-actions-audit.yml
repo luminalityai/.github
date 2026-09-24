@@ -59,12 +59,39 @@ concurrency:
 jobs:
   audit:
     name: Actions audit (issue-only sensor)
-    runs-on: ubuntu-latest
+    # RUNNER, indirected so this org-internal beat can move to the homelab `jdb`
+    # fleet WITHOUT editing this file. UNSET -> 'ubuntu-latest'.
+    #   gh variable set    RUNNER_LABEL --body jdb --repo luminalityai/.github
+    #   gh variable delete RUNNER_LABEL --repo luminalityai/.github   # instant revert
+    # Precondition: the jumpdrive-broker runner group must admit luminalityai/.github
+    # first -- otherwise the job queues forever with no red check.
+    # ONE label, never a comma-separated list -- `runs-on:` reads a scalar as a
+    # SINGLE label, so a comma value matches no runner and the job queues forever.
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 45
     permissions:
+      issues: read # alert-job gate: look up an open beat-failure issue
       contents: read   # job token only reads this repo; cross-repo issue writes use the minted App token
 
+    outputs:
+      beat_issue_open: ${{ steps.beat.outputs.open }}
     steps:
+      # Alert-job gate. `alert` below used to run on EVERY beat (a whole runner
+      # spin-up, billed as a full minute) just to find nothing to do on a clean
+      # run. It only has work when a needed job FAILED, or when a job succeeded
+      # and a beat-failure issue is open to close. This step answers the second
+      # question so `alert` can be skipped otherwise. Fail-safe: a lookup error
+      # leaves the output unset / "true", so `alert` still runs, and `alert`
+      # re-checks everything itself -- its behaviour is unchanged.
+      - name: Look up an open beat-failure issue (alert-job gate)
+        id: beat
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          N="$(gh issue list --search '"beat failure: weekly-actions-audit" in:title' --state open --json number --jq '.[0].number // empty')" || N="lookup-failed"
+          if [ -z "$N" ]; then echo "open=false" >> "$GITHUB_OUTPUT"; else echo "open=true" >> "$GITHUB_OUTPUT"; fi
       - name: Validate inputs
         env:
           SCOPE: ${{ inputs.scope || 'auto' }}
@@ -288,7 +315,10 @@ jobs:
   # the next green run so a recovered beat doesn't leave litter.
   alert:
     needs: [audit]
-    if: ${{ always() }}
+    # Runs only when there is something to do: a needed job failed (open or
+    # comment the issue), or `audit` saw an open beat-failure issue that a
+    # success may close. `!= 'false'` so a missing/failed lookup still runs it.
+    if: ${{ always() && (contains(needs.*.result, 'failure') || needs.audit.outputs.beat_issue_open != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
