@@ -311,6 +311,8 @@ jobs:
     # success may close. `!= 'false'` so a missing/failed lookup still runs it.
     if: ${{ always() && (contains(needs.*.result, 'failure') || needs.plan.outputs.beat_issue_open != 'false') }}
     runs-on: ubuntu-latest
+    # default for ordinary jobs (only n=2 observed runs, 2026-09); a hang must not burn 6h of runner time
+    timeout-minutes: 30
     permissions:
       issues: write
     steps:
