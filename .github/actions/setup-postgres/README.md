@@ -26,7 +26,10 @@ a workaround — it is the supported configuration.
 Verified end-to-end (download → sha1 → extract → `initdb` → start → real SQL
 round-trip over `DATABASE_URL`) inside the actual `jumpdrive-ci-runner` image on
 both **linux/amd64** and **linux/arm64** — PostgreSQL 16.15, uid 1000,
-`no-new-privileges`, no sudo/docker.
+`no-new-privileges`, no sudo/docker. That jdb verification predates the 18
+default; the 17 and 18 majors are smoke-tested on hosted `ubuntu-latest`
+(`setup-postgres-smoke.yml`), and on jdb by the private consumer that pins them
+(luminality-web: 17 for migration safety, 18 for the test suite).
 
 ## Usage
 
@@ -40,7 +43,7 @@ jobs:
 
       - uses: luminalityai/.github/.github/actions/setup-postgres@main
         with:
-          version: "16"   # optional; defaults below
+          version: "17"   # pin your app's PRODUCTION major; defaults to 18
 
       # DATABASE_URL / PGHOST / PGPORT / PGUSER / PGDATABASE are now in the env
       - run: bundle exec rails db:prepare && bundle exec rspec
@@ -50,7 +53,7 @@ jobs:
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `version` | `16` | PostgreSQL major (pinned to production). A bare major/`major.minor` resolves to the newest matching patch on Maven Central; an exact `X.Y.Z` is used as-is. |
+| `version` | `18` | PostgreSQL major. The default is the estate CI target (rarebit-one/rarebit-sre#376); pin your app's production major explicitly when prod is older. A bare major/`major.minor` resolves to the newest matching patch on Maven Central; an exact `X.Y.Z` is used as-is. |
 | `port` | `5432` | TCP port to listen on (bound to `127.0.0.1`). |
 | `database` | `postgres` | Database to ensure exists (created via the single-user backend if it isn't the default). |
 | `username` | `postgres` | Superuser role the cluster is initialised with. |
