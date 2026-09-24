@@ -56,21 +56,23 @@ concurrency:
 jobs:
   promote:
     name: Promote to Production
-    # RUNNER. `vars` resolve from the CALLER repo (luminality-web: RUNNER_LABEL=jdb),
-    # so the promotion runs on the homelab fleet by default and on 'ubuntu-latest'
-    # for a caller that sets nothing. Tools used: git, gh, curl, jq (all on the
-    # jdb image) and sentry-cli (installed to a user prefix below).
-    #
-    # 🔴 IF THE HOMELAB IS DOWN, a jdb-routed job does not fail -- it sits
-    # `queued`. A production promotion must never hang on that, so
-    # RUNNER_LABEL_PROMOTE is a production-only OVERRIDE checked first. The
-    # ONE-LINE REVERT that pins ONLY this job back to hosted (web's other
-    # RUNNER_LABEL jobs keep using jdb):
-    #   gh variable set RUNNER_LABEL_PROMOTE --body ubuntu-latest --repo luminalityai/luminality-web
-    # Undo the override:
-    #   gh variable delete RUNNER_LABEL_PROMOTE --repo luminalityai/luminality-web
-    # ONE label, never a comma-separated list (a comma value matches no runner).
-    runs-on: ${{ vars.RUNNER_LABEL_PROMOTE || vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    # RUNNER -- HOSTED unless the CALLER sets RUNNER_LABELS_PROMOTE (`vars` resolve
+    # from the caller repo). Deliberately NOT chained to RUNNER_LABEL: production
+    # promotion must not follow a CI-routing variable onto the homelab by accident.
+    # 🔴 NEVER a bare `jdb`. A bare `runs-on: jdb` job can be taken by the macOS
+    # runner the broker mints for `[jdb, macos]` iOS jobs -- GitHub matches a job
+    # to ANY runner whose labels are a superset of its own (delivery-ops#420).
+    # Opt in with a JSON ARRAY that names the OS, e.g. '["jdb","linux"]': `linux`
+    # makes the broker require a Linux worker and is minted into the runner's
+    # labels, so a macOS runner can never take the job. fromJSON of the quoted
+    # fallback is the plain string 'ubuntu-latest'.
+    # 🔴 A self-hosted job whose fleet is down does not fail -- it sits `queued`.
+    # Opting in accepts that a homelab outage can stall a promotion; the ONE-LINE
+    # REVERT is:
+    #   gh variable delete RUNNER_LABELS_PROMOTE --repo luminalityai/luminality-web
+    # Opt in (Linux only; tools used are git, gh, curl, jq and a user-prefix sentry-cli):
+    #   gh variable set RUNNER_LABELS_PROMOTE --body '["jdb","linux"]' --repo luminalityai/luminality-web
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS_PROMOTE || '"ubuntu-latest"') }}
     # Must exceed the deploy-watch inner deadline (25m) + health retries + promote
     # overhead, or the job is killed before the watch can time out cleanly.
     timeout-minutes: 45
