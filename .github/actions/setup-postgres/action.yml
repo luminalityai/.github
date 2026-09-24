@@ -3,7 +3,7 @@
 #
 #   uses: luminalityai/.github/.github/actions/setup-postgres@main
 #     with:
-#       version: "16"          # postgres major (pinned to production); resolves newest patch
+#       version: "17"          # postgres major — PIN your app's production major; resolves newest patch
 #   # then, in any later step:
 #   env: { DATABASE_URL: "${{ env.DATABASE_URL }}" }   # already exported to $GITHUB_ENV
 #
@@ -44,11 +44,13 @@ description: >
 inputs:
   version:
     description: >
-      PostgreSQL major version (pinned to production = 16). A bare major ("16")
-      or major.minor resolves to the newest matching patch on Maven Central; an
-      exact "X.Y.Z" is used as-is.
+      PostgreSQL major version. Defaults to 18, the estate CI target
+      (rarebit-one/rarebit-sre#376). Callers whose production database is on an
+      older major should pin it explicitly (e.g. "17") so CI keeps proving what
+      prod can run. A bare major ("18") or major.minor resolves to the newest
+      matching patch on Maven Central; an exact "X.Y.Z" is used as-is.
     required: false
-    default: "16"
+    default: "18"
   port:
     description: "TCP port to listen on (127.0.0.1)."
     required: false
@@ -80,7 +82,7 @@ runs:
       run: |
         set -euo pipefail
 
-        VERSION="${INPUT_VERSION:-16}"
+        VERSION="${INPUT_VERSION:-18}"
         PORT="${INPUT_PORT:-5432}"
         DATABASE="${INPUT_DATABASE:-postgres}"
         USERNAME="${INPUT_USERNAME:-postgres}"

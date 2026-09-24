@@ -31,6 +31,14 @@ permissions:
 
 jobs:
   smoke:
+    # 18 = the action's default and the estate CI target; 17 = the oldest major
+    # a current consumer pins (luminality-web migration_safety, prod = 17).
+    # rarebit-one/rarebit-sre#376.
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["17", "18"]
+    name: smoke (pg${{ matrix.postgres }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,7 +47,7 @@ jobs:
       - name: Stand up root-free postgres
         uses: ./.github/actions/setup-postgres
         with:
-          version: "16"
+          version: ${{ matrix.postgres }}
           database: smoke_test
 
       - name: Real SQL round-trip over DATABASE_URL (app-style, via libpq)
@@ -65,8 +73,10 @@ jobs:
             })().catch((e) => { console.error(e); process.exit(1); });
           '
 
-      - name: Assert version is the pinned major (16)
+      - name: Assert version is the pinned major
         shell: bash
+        env:
+          EXPECTED_MAJOR: ${{ matrix.postgres }}
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"; cd "$tmp"; npm init -y >/dev/null 2>&1; npm install pg@8 >/dev/null 2>&1
@@ -81,4 +91,4 @@ jobs:
             })().catch((e) => { console.error(e); process.exit(1); });
           ')"
           echo "server major = $major"
-          test "$major" = "16" || { echo "::error::expected major 16, got $major"; exit 1; }
+          test "$major" = "$EXPECTED_MAJOR" || { echo "::error::expected major $EXPECTED_MAJOR, got $major"; exit 1; }
