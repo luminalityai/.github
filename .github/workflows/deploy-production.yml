@@ -56,7 +56,21 @@ concurrency:
 jobs:
   promote:
     name: Promote to Production
-    runs-on: ubuntu-latest
+    # RUNNER. `vars` resolve from the CALLER repo (luminality-web: RUNNER_LABEL=jdb),
+    # so the promotion runs on the homelab fleet by default and on 'ubuntu-latest'
+    # for a caller that sets nothing. Tools used: git, gh, curl, jq (all on the
+    # jdb image) and sentry-cli (installed to a user prefix below).
+    #
+    # 🔴 IF THE HOMELAB IS DOWN, a jdb-routed job does not fail -- it sits
+    # `queued`. A production promotion must never hang on that, so
+    # RUNNER_LABEL_PROMOTE is a production-only OVERRIDE checked first. The
+    # ONE-LINE REVERT that pins ONLY this job back to hosted (web's other
+    # RUNNER_LABEL jobs keep using jdb):
+    #   gh variable set RUNNER_LABEL_PROMOTE --body ubuntu-latest --repo luminalityai/luminality-web
+    # Undo the override:
+    #   gh variable delete RUNNER_LABEL_PROMOTE --repo luminalityai/luminality-web
+    # ONE label, never a comma-separated list (a comma value matches no runner).
+    runs-on: ${{ vars.RUNNER_LABEL_PROMOTE || vars.RUNNER_LABEL || 'ubuntu-latest' }}
     # Must exceed the deploy-watch inner deadline (25m) + health retries + promote
     # overhead, or the job is killed before the watch can time out cleanly.
     timeout-minutes: 45
@@ -416,7 +430,12 @@ jobs:
             exit 0
           fi
 
-          npm install -g @sentry/cli
+          # User prefix, not the global one: on a self-hosted `jdb` runner node lives
+          # in a root-owned /usr/local and the job runs unprivileged, so a plain
+          # `npm install -g` fails with EACCES (and this step is continue-on-error,
+          # so that would silently drop the Sentry deploy marker).
+          npm install -g --prefix "${RUNNER_TEMP}/npm-global" @sentry/cli
+          export PATH="${RUNNER_TEMP}/npm-global/bin:${PATH}"
 
           sentry-cli releases new "$SHA" 2>/dev/null || true
 
