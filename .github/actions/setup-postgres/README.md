@@ -33,7 +33,8 @@ both **linux/amd64** and **linux/arm64** — PostgreSQL 16.15, uid 1000,
 ```yaml
 jobs:
   test:
-    runs-on: jdb          # or ubuntu-latest — identical behaviour
+    runs-on: [jdb, linux] # or ubuntu-latest — identical behaviour. Never a bare `jdb`:
+                          # it can take a Mac runner minted for [jdb, macos] (luminalityai/delivery-ops#420)
     steps:
       - uses: actions/checkout@v4
 
