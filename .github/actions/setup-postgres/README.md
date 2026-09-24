@@ -26,7 +26,10 @@ a workaround — it is the supported configuration.
 Verified end-to-end (download → sha1 → extract → `initdb` → start → real SQL
 round-trip over `DATABASE_URL`) inside the actual `jumpdrive-ci-runner` image on
 both **linux/amd64** and **linux/arm64** — PostgreSQL 16.15, uid 1000,
-`no-new-privileges`, no sudo/docker.
+`no-new-privileges`, no sudo/docker. That jdb verification predates the 18
+default; the 17 and 18 majors are smoke-tested on hosted `ubuntu-latest`
+(`setup-postgres-smoke.yml`), and on jdb by the private consumer that pins them
+(luminality-web: 17 for migration safety, 18 for the test suite).
 
 ## Usage
 
