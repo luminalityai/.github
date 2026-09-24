@@ -2,6 +2,16 @@ name: Claude Code Review
 
 on:
   workflow_call:
+    inputs:
+      allowed-bots:
+        description: >-
+          Comma-separated bot logins the review may run for (the PR event's
+          GITHUB_ACTOR). Default covers the org release App and claude[bot]
+          (opens weekly-maintenance PRs). Dependabot PRs are step-gated out
+          below. Extend per caller if needed; never '*'.
+        required: false
+        type: string
+        default: 'luminality-release-bot,claude'
 
 env:
   # Single source of truth for the Claude model across this repo's Claude
@@ -68,7 +78,7 @@ jobs:
           # comment, so no GitHub App / release-bot identity is required.
           github_token: ${{ github.token }}
           track_progress: true
-          allowed_bots: '*'
+          allowed_bots: ${{ inputs.allowed-bots }}
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
