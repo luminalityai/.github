@@ -95,6 +95,7 @@ jobs:
           client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          permission-metadata: read
 
       - name: Build repo matrix
         id: repos
