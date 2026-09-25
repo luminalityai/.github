@@ -93,8 +93,10 @@ jobs:
 
       - name: Determine target SHA
         id: main
+        env:
+          REF_INPUT: ${{ inputs.ref }}
         run: |
-          REF="${{ inputs.ref }}"
+          REF="${REF_INPUT}"
           if [ -n "$REF" ]; then
             if ! git rev-parse --verify "$REF" &>/dev/null; then
               echo "::error::Ref '$REF' is not a valid commit"
