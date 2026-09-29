@@ -1,0 +1,46 @@
+name: Test review-gate logic
+
+# Regression gate for the Claude Code Review verdict's exit-code contract
+# (tests/review-gate-exit-codes.py). It executes the reusable's inline step
+# scripts — token split, retry verify, verdict parser staging, derive, verdict —
+# against synthetic comment lists and real review bodies. Network-free.
+#
+# Callers pin claude-code-review.yml by SHA, so a broken verdict step would
+# only surface after a pin bump, in every calling repo at once. This suite is
+# the pre-merge gate on that logic, and it runs against the PR's copy.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/claude-code-review.yml'
+      - '.github/workflows/claude-code-review-caller.yml'
+      - '.github/workflows/test-review-gate.yml'
+      - 'tests/review-gate-exit-codes.py'
+      - 'tests/fixtures/review-verdict/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-code-review.yml'
+      - '.github/workflows/claude-code-review-caller.yml'
+      - '.github/workflows/test-review-gate.yml'
+      - 'tests/review-gate-exit-codes.py'
+      - 'tests/fixtures/review-verdict/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-review-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review-gate-logic:
+    name: Review-gate logic
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run review-gate exit-code tests
+        run: python3 tests/review-gate-exit-codes.py
