@@ -1,5 +1,59 @@
 name: Claude Code Review
 
+# ---------------------------------------------------------------------------
+# THE VERDICT CONTRACT
+#
+# This review emits a machine-readable verdict, ported from
+# sidekick-labs/.github's claude-review composite. The job conclusion IS the
+# verdict, so automation (a PR lander, a Sentry fixer's bots-only gate) can read
+# it from the `review / Claude Code Review` check run without parsing prose:
+#
+#   review ran, zero BLOCKING-labelled findings (advisory only, or none) -> success
+#   review ran, >=1 BLOCKING-labelled (correctness/security) finding     -> failure
+#   review could not run on either attempt                               -> failure
+#   the action returned without calling the model (no-op)                -> failure
+#   verdict undeterminable (no tracking comment for this run, "Claude
+#     encountered an error", a zero-turn comment, unreadable comments)   -> failure
+#   dependabot / fork PR (no token by design), draft                     -> success/skipped,
+#                                                                            no verdict
+#
+# The verdict itself is also exposed as the workflow outputs `verdict`
+# (PASS | BLOCKING, empty when the lane skipped) and `marker` (the
+# workflow-authored `<!-- claude-review-verdict: <V> run=<run_id>-<attempt> -->`),
+# and is written to the step summary.
+#
+# FAIL CLOSED: an undeterminable verdict is never a pass. A green check must
+# mean "a review ran for this head and did not object".
+#
+# This check is NOT a required status check anywhere in luminalityai (rulesets
+# require only `pin-check / Actions pinning gate`), so a red here informs the
+# merge policy ("never merge over a red check") without hard-blocking a human.
+#
+# WHY THE REVIEW STEP IS STILL `continue-on-error` (the 2026-08-31 workaround).
+# That line was added for an upstream claude-code-action crash — Bun's
+# "Internal error: directory mismatch for directory .../tsconfig.json"
+# (oven-sh/bun#25730, anthropics/claude-code-action#1568 / #1295). It hit
+# luminalityai on 2026-08-31 04:35–05:19 UTC (.github#57, luminality-web#1134)
+# and has not recurred here since: 0 "Claude encountered an error" comments
+# across web/app/static/.github from then to 2026-09-29, ~350 completed reviews.
+# But the upstream issue is still open and was re-reported on 2026-09-16 against
+# a v1 build close to our pin, and it is non-deterministic. So the step stays
+# soft — no longer to hide failures, but so the RETRY and the VERIFY/VERDICT
+# steps below get to run and decide the job conclusion. A crash on both attempts
+# is red ("Verify a review actually ran"); a crash absorbed by the retry is not.
+#
+# WHY THIS STAYS ONE REUSABLE (sidekick split it into a composite + thin shim).
+# Sidekick moved its logic into a composite because claude-code-action's OIDC
+# token exchange validates, server-side, that the workflow carrying the action is
+# byte-identical on the default branch — false by construction on a PR editing
+# that workflow. This org passes `github_token: github.token`, and at the pinned
+# SHA `setupGitHubToken()` returns that override BEFORE any OIDC exchange
+# (src/github/token.ts), so the validation guard never runs here. Evidence:
+# .github#58 edited this file and was reviewed normally. The no-op
+# classification below is kept anyway, because it is the fail-closed answer to
+# ANY early return (e.g. if `github_token` is ever removed).
+# ---------------------------------------------------------------------------
+
 on:
   workflow_call:
     inputs:
@@ -12,6 +66,28 @@ on:
         required: false
         type: string
         default: 'luminality-release-bot,claude'
+      review-author:
+        description: >-
+          The account whose tracking comment the verdict is DERIVED from, as the
+          REST comments API spells it. With `github_token: github.token` (below)
+          claude-code-action posts as `github-actions[bot]`. Comments from anyone
+          else are never read for a verdict; one imitating this run's review is
+          ignored and reported.
+        required: false
+        type: string
+        default: 'github-actions[bot]'
+    outputs:
+      verdict:
+        description: >-
+          PASS or BLOCKING, derived by this workflow from the reviewer's severity
+          labels. Empty when the lane skipped (dependabot / fork / no token) or no
+          verdict could be derived (the job is then red).
+        value: ${{ jobs.claude_review.outputs.verdict }}
+      marker:
+        description: >-
+          The workflow-authored `<!-- claude-review-verdict: <PASS|BLOCKING>
+          run=<run_id>-<attempt> -->` marker the verdict step accepted.
+        value: ${{ jobs.claude_review.outputs.marker }}
 
 env:
   # Single source of truth for the Claude model across this repo's Claude
@@ -25,31 +101,60 @@ env:
 jobs:
   claude_review:
     name: Claude Code Review
-    # NOTE: deliberately NOT gating the JOB on dependabot here. A skipped
-    # job reports its required status context as skipped/neutral, which
-    # GitHub treats as not-satisfied -> the required "Claude Code Review"
-    # check stays forever-pending and auto-merge hangs. Instead the job
-    # RUNS for dependabot PRs and the review STEPS are step-gated below, so
-    # the job completes green without spending LLM budget on a version bump.
+    # NOTE: deliberately NOT gating the JOB on dependabot here. A skipped job
+    # reports its status context as skipped/neutral, which GitHub treats as
+    # not-satisfied if the context is ever made required -> forever-pending.
+    # Instead the job RUNS for dependabot PRs and the review STEPS are
+    # step-gated below, so the job completes green without spending LLM budget
+    # on a version bump.
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      verdict: ${{ steps.derive.outputs.verdict }}
+      marker: ${{ steps.derive.outputs.marker }}
 
     steps:
       # Secrets aren't allowed in `if:` expressions, so route through env and
-      # short-circuit downstream steps when the token is missing. Lets the
-      # workflow run on repos / forks that haven't (yet) been wired up with
-      # the CLAUDE_CODE_OAUTH_TOKEN secret without producing a hard failure.
+      # short-circuit downstream steps when the token is missing.
+      #
+      # A MISSING TOKEN IS NOT ALWAYS BENIGN. Every step below — including the
+      # verdict steps — is conditioned on `skip != 'true'`, so a blanket skip
+      # disarms the verdict itself and the job reports SUCCESS with no review.
+      # So the two cases are separated:
+      #   STRUCTURALLY tokenless — a fork PR or a dependabot PR (GitHub
+      #     withholds secrets). Skip and stay green, with a durable ::notice.
+      #   UNEXPECTEDLY tokenless — a same-repo, non-dependabot PR in a repo
+      #     that calls this reusable. The org secret is unset, revoked or
+      #     renamed. FAIL, rather than certify a review that cannot happen.
       - name: Check for Claude OAuth token
         id: token-check
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # `head.repo.fork` is the discriminator, NOT the secret's absence —
+          # the absence is the symptom both cases share.
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
-          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN secret is not configured; skipping Claude review."
+          if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          elif [ "${IS_FORK:-}" = "true" ] || [ "${PR_AUTHOR:-}" = "dependabot[bot]" ]; then
+            reason="fork PR"
+            [ "${PR_AUTHOR:-}" = "dependabot[bot]" ] && reason="dependabot PR"
+            echo "::notice title=Claude review skipped (no token by design)::${reason} — GitHub withholds secrets here, so no review ran. This green check means NO REVIEW WAS NEEDED, not that a review passed."
+            {
+              echo "### :recycle: Claude Code Review skipped — no token by design"
+              echo
+              echo "**Why:** ${reason}. GitHub withholds \`CLAUDE_CODE_OAUTH_TOKEN\` here, so no"
+              echo "review could run and no verdict was derived."
+              echo
+              echo "This green check means *no review was needed*, *not* that a review passed."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "::error::CLAUDE_CODE_OAUTH_TOKEN is unavailable on a same-repo, non-dependabot PR. This repo calls the shared review workflow, so the org secret is expected to be present: it is unset, revoked or renamed. Failing rather than reporting a green check for a review that never ran."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
 
       - name: Checkout repository
@@ -58,24 +163,35 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Run Claude Code Review
+      # Records when THIS attempt's review window opens. The derivation only
+      # trusts a reviewer comment created inside it (less a clock-skew
+      # allowance), so a re-run can never be adjudicated on an earlier
+      # attempt's comment for the same run id.
+      - name: Open the review window
+        id: review_window
         if: steps.token-check.outputs.skip != 'true' && github.event.pull_request.user.login != 'dependabot[bot]'
-        # TEMPORARY (2026-08-31): tolerate an upstream claude-code-action regression
-        # that returns is_error on turn 1 ("directory mismatch … tsconfig.json"),
-        # crashing this step on every PR. This review is advisory/non-required, so
-        # a CLI-side crash must not red-line the status rollup and block otherwise
-        # clean merges estate-wide. Revert this line once upstream is fixed.
+        run: |
+          echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude Code Review
+        id: review
+        if: steps.token-check.outputs.skip != 'true' && github.event.pull_request.user.login != 'dependabot[bot]'
+        # continue-on-error only so the RETRY + verify + verdict steps below get
+        # to run — NOT because a failure here is acceptable (see the header:
+        # the 2026-08-31 Bun "directory mismatch … tsconfig.json" crash is
+        # non-deterministic and still open upstream). The step's own conclusion
+        # stays honest in the UI; the steps below decide the JOB conclusion.
         continue-on-error: true
-        uses: anthropics/claude-code-action@4036a180cf690f49529f5d8c79c998855287f590 # v1.0.183 (auth: older bundled CLI 401s on OAuth tokens after the 2026-07-07 Anthropic auth change; see rarebit-ops#119)
+        uses: anthropics/claude-code-action@4036a180cf690f49529f5d8c79c998855287f590 # v1.0.230 (OAuth needs >=v1.0.168 since the 2026-07-07 Anthropic auth change; see rarebit-ops#119)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Pass the default Actions token explicitly. Without a github_token the
           # action tries to exchange the OIDC token for a Claude GitHub App
           # installation token — which 401s as "Claude Code is not installed"
           # because that app isn't installed on this org. Supplying the built-in
-          # token skips that exchange; github-actions[bot] has the
-          # pull-requests: write needed to post the review and the track_progress
-          # comment, so no GitHub App / release-bot identity is required.
+          # token skips that exchange (and with it the workflow-validation
+          # guard); github-actions[bot] has the pull-requests: write needed to
+          # post the tracking comment the verdict is derived from.
           github_token: ${{ github.token }}
           track_progress: true
           allowed_bots: ${{ inputs.allowed-bots }}
@@ -93,11 +209,775 @@ jobs:
             Use the repository's CLAUDE.md for guidance on style and conventions.
             Be constructive and helpful in your feedback.
 
-            Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
+            Write your review into the tracking comment this action already created
+            for you (update it as you go). Do not post a second, separate review
+            comment: the verdict step reads the tracking comment.
 
+            ## Severity — this review emits a machine-read verdict, so classify every finding
+
+            Give every finding you raise exactly one severity, and write that
+            severity at the start of the finding:
+
+            - **BLOCKING** — correctness or security. A logic error, an off-by-one,
+              a crash or unhandled failure path, data loss or corruption, a race or
+              deadlock, a broken API/schema contract, a regression the diff
+              introduces, a test that asserts nothing it claims to assert; or an
+              injection, authz/authn, secret-handling, SSRF or unsafe-deserialisation
+              flaw. The test is: **merging this as-is ships a defect.**
+            - **ADVISORY** — everything else. Simplification, reuse, naming, style,
+              nits, formatting, "consider", speculative performance, extra test
+              coverage you would like, documentation. Real value, but not a defect.
+
+            Post ALL findings of BOTH severities in your comment — advisory findings
+            are information the author should have, they simply do not block.
+
+            When you are genuinely unsure whether something is a real defect, say so
+            in the finding and mark it ADVISORY. Do not inflate a preference into a
+            BLOCKING finding, and do not soften a defect to keep a PR moving.
+
+            ## Label format — MACHINE-READ, so follow it exactly
+
+            The verdict is decided by a deterministic parser that reads the
+            severity LABELS in your comment, so every finding must start its own
+            line with its label in bold, then an em dash and a short title:
+
+            **BLOCKING — <short title>**
+            **ADVISORY — <short title>**
+
+            A heading such as `### BLOCKING — <short title>` is also fine. Explain
+            the finding on the lines below its label.
+
+            - Start a line with `BLOCKING` or `ADVISORY` ONLY to label a finding of
+              THIS review. To mention a finding an earlier review raised that is now
+              fixed, write e.g. "Previously blocking, now resolved: ...".
+            - When nothing blocks, say "No BLOCKING findings." in a sentence; do
+              not leave an empty `BLOCKING` heading or section.
+            - Do not add any verdict marker or HTML comment: the workflow derives
+              and records the verdict itself from your labels.
           # Read/Glob/Grep let the reviewer inspect the checked-out source
           # (type defs, tests, the CLAUDE.md the prompt references) instead of
           # reasoning from `gh pr diff` alone. Deliberately read-only — no Edit
           # or mutating Bash — so the workflow stays fork-safe and resistant to
           # prompt injection from untrusted PR content.
           claude_args: '--model ${{ env.CLAUDE_MODEL }} --allowed-tools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)" --effort ${{ env.CLAUDE_EFFORT }}'
+
+      # Retry once before giving up. A transient upstream blip (the Bun crash,
+      # a rate limit, a 5xx) buys a second attempt rather than an immediate red
+      # check. What it does NOT buy is a green check — see the verify step.
+      - name: Pause before review retry
+        # A skipped step's outcome is 'skipped', not 'failure', so this
+        # inherits the token-check / dependabot gate from the review step.
+        if: steps.review.outcome == 'failure'
+        run: sleep 60
+
+      - name: Run Claude Code Review (retry)
+        id: review_retry
+        if: steps.review.outcome == 'failure'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@4036a180cf690f49529f5d8c79c998855287f590 # v1.0.230 (keep in step with the first attempt's pin)
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          track_progress: true
+          allowed_bots: ${{ inputs.allowed-bots }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Please review this pull request and provide feedback on:
+            - Code quality and best practices
+            - Potential bugs or issues
+            - Performance considerations
+            - Security concerns
+            - Test coverage
+
+            Use the repository's CLAUDE.md for guidance on style and conventions.
+            Be constructive and helpful in your feedback.
+
+            Write your review into the tracking comment this action already created
+            for you (update it as you go). Do not post a second, separate review
+            comment: the verdict step reads the tracking comment.
+
+            ## Severity — this review emits a machine-read verdict, so classify every finding
+
+            Give every finding you raise exactly one severity, and write that
+            severity at the start of the finding:
+
+            - **BLOCKING** — correctness or security. A logic error, an off-by-one,
+              a crash or unhandled failure path, data loss or corruption, a race or
+              deadlock, a broken API/schema contract, a regression the diff
+              introduces, a test that asserts nothing it claims to assert; or an
+              injection, authz/authn, secret-handling, SSRF or unsafe-deserialisation
+              flaw. The test is: **merging this as-is ships a defect.**
+            - **ADVISORY** — everything else. Simplification, reuse, naming, style,
+              nits, formatting, "consider", speculative performance, extra test
+              coverage you would like, documentation. Real value, but not a defect.
+
+            Post ALL findings of BOTH severities in your comment — advisory findings
+            are information the author should have, they simply do not block.
+
+            When you are genuinely unsure whether something is a real defect, say so
+            in the finding and mark it ADVISORY. Do not inflate a preference into a
+            BLOCKING finding, and do not soften a defect to keep a PR moving.
+
+            ## Label format — MACHINE-READ, so follow it exactly
+
+            The verdict is decided by a deterministic parser that reads the
+            severity LABELS in your comment, so every finding must start its own
+            line with its label in bold, then an em dash and a short title:
+
+            **BLOCKING — <short title>**
+            **ADVISORY — <short title>**
+
+            A heading such as `### BLOCKING — <short title>` is also fine. Explain
+            the finding on the lines below its label.
+
+            - Start a line with `BLOCKING` or `ADVISORY` ONLY to label a finding of
+              THIS review. To mention a finding an earlier review raised that is now
+              fixed, write e.g. "Previously blocking, now resolved: ...".
+            - When nothing blocks, say "No BLOCKING findings." in a sentence; do
+              not leave an empty `BLOCKING` heading or section.
+            - Do not add any verdict marker or HTML comment: the workflow derives
+              and records the verdict itself from your labels.
+          claude_args: '--model ${{ env.CLAUDE_MODEL }} --allowed-tools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)" --effort ${{ env.CLAUDE_EFFORT }}'
+
+      # -----------------------------------------------------------------------
+      # Did a review run at all? Only reached when the first attempt FAILED.
+      # Both attempts failing means no review exists for this PR, whatever the
+      # cause (Bun crash, expired token, Anthropic outage) — so FAIL. The
+      # classification only makes the annotation actionable.
+      # -----------------------------------------------------------------------
+      - name: Verify a review actually ran
+        # NOT continue-on-error, so the failure branches fail the job.
+        if: steps.review.outcome == 'failure'
+        env:
+          RETRY_OUTCOME: ${{ steps.review_retry.outcome }}
+          EXECUTION_FILE: ${{ steps.review_retry.outputs.execution_file || steps.review.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+
+          if [ "${RETRY_OUTCOME:-}" = "success" ]; then
+            echo "::notice title=Claude review succeeded on retry::The first attempt failed and the retry completed. The verdict steps decide the conclusion."
+            exit 0
+          fi
+
+          exec_file="${EXECUTION_FILE:-}"
+          if [ -z "$exec_file" ] || [ ! -f "$exec_file" ]; then
+            exec_file="${RUNNER_TEMP:-/tmp}/claude-execution-output.json"
+          fi
+
+          model_error=false
+          if [ -f "$exec_file" ] \
+            && jq -e 'any(.[]?; .type == "result" and .is_error == true)' "$exec_file" >/dev/null 2>&1; then
+            model_error=true
+          fi
+
+          # Surface just enough to classify the failure (auth 401/403 vs rate
+          # limit 429 vs upstream 5xx). Deliberately narrow: no message text or
+          # cost/usage figures.
+          if [ -f "$exec_file" ]; then
+            echo "Failure classification:"
+            jq -c 'map(select(.type == "result")) | last
+                   | {subtype, is_error, api_error_status, terminal_reason, num_turns, duration_ms}' \
+              "$exec_file" 2>/dev/null || echo "(unparseable)"
+          fi
+
+          if [ "$model_error" = "true" ]; then
+            status=$(jq -r 'map(select(.type == "result")) | last | .api_error_status // "?"' "$exec_file" 2>/dev/null || echo "?")
+            turns=$(jq -r 'map(select(.type == "result")) | last | .num_turns // "?"' "$exec_file" 2>/dev/null || echo "?")
+            echo "::error title=Claude review did not run::The review returned is_error on both attempts (api status ${status}, turns ${turns}) — the upstream Bun 'directory mismatch' crash, an expired/usage-exhausted OAuth token, or an Anthropic-side outage. NO REVIEW WAS PRODUCED, so this check is red rather than a green tick over an unreviewed PR."
+            {
+              echo "### :x: Claude Code Review did not run"
+              echo
+              echo "The review returned \`is_error\` on **both** the initial attempt and the retry"
+              echo "(api status \`${status}\`, turns \`${turns}\`). Typical causes: the upstream Bun"
+              echo "\`directory mismatch … tsconfig.json\` crash (anthropics/claude-code-action#1568),"
+              echo "an expired or usage-exhausted \`CLAUDE_CODE_OAUTH_TOKEN\`, or an Anthropic outage."
+              echo
+              echo "**No review was produced**, so no verdict exists. Re-run the check."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          fi
+
+          echo "::error title=Claude review setup failure::The review step failed on both attempts without a model result record — likely credentials, inputs, or the action itself. Failing the job so it gets fixed."
+          {
+            echo "### :x: Claude Code Review failed to start"
+            echo
+            echo "The review step failed on both attempts without producing a model \`result\`"
+            echo "record, so this is a configuration/credential failure rather than a model"
+            echo "error. Check the \`Run Claude Code Review\` step log."
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          exit 1
+
+      # -----------------------------------------------------------------------
+      # THE VERDICT. "A review happened" is not enough — these steps map WHAT
+      # THE REVIEW FOUND onto the job conclusion.
+      #
+      # THE WORKFLOW AUTHORS THE MARKER, NOT THE MODEL. `Derive` reads the
+      # reviewer's own tracking comment for THIS run, derives PASS/BLOCKING
+      # deterministically from its BLOCKING labels (the parser's docstring is
+      # the exact rule), and WRITES the nonce-bound marker as a step output.
+      # `Determine` reads ONLY that step output and maps it onto the exit code.
+      #
+      # FORGERY RESISTANCE. A step output can only be written by this job, so
+      # nothing in any comment can supply an accepted marker; a marker found in
+      # a comment is never read, only reported. The derivation only trusts
+      # comments from `review-author` (`github-actions[bot]`; a human login
+      # cannot contain brackets), selected by the action's tracking header AND a
+      # link to THIS run id AND creation inside this job's review window. Note
+      # `github-actions[bot]` is shared by every workflow in the calling repo,
+      # so the run-id link + window binding is what excludes their comments.
+      #
+      # SEVERITY SPLIT. Only correctness/security findings block. Advisory
+      # findings post and conclude green: a gate that reddens on taste is a
+      # gate people learn to merge past.
+      #
+      # POSITIVE CONTROL: tests/review-gate-exit-codes.py pins the parser
+      # against real review bodies and the exit codes against synthetic comment
+      # lists. It proves the PARSER, not that a real defect gets labelled
+      # BLOCKING — that needs one live positive.
+      # -----------------------------------------------------------------------
+
+      # The parser lives INLINE: a reusable workflow runs in the CALLER's
+      # checkout, so a script file in luminalityai/.github would not exist at
+      # runtime (and this repo is private, so it cannot be fetched with the
+      # caller's token). tests/review-gate-exit-codes.py executes this step and
+      # imports the file it writes, so the tested parser is the shipped one.
+      - name: Stage the verdict parser
+        if: >-
+          steps.token-check.outputs.skip != 'true'
+          && github.event.pull_request.user.login != 'dependabot[bot]'
+          && (steps.review.outcome == 'success' || steps.review_retry.outcome == 'success')
+        run: |
+          mkdir -p "${RUNNER_TEMP}/claude-review"
+          cat > "${RUNNER_TEMP}/claude-review/derive_verdict.py" <<'PY'
+          #!/usr/bin/env python3
+          """Derive the review verdict from the reviewer's own posted comment.
+
+          Ported from sidekick-labs/.github (`.github/actions/claude-review/derive_verdict.py`)
+          with the RULE unchanged. The only luminality-specific difference is WHO the
+          reviewer is: this org's review passes `github_token: github.token` to
+          claude-code-action, so the tracking comment is authored by `github-actions[bot]`
+          (REST spelling), not `claude[bot]`.
+
+          WHY THE VERDICT IS DERIVED, NOT DECLARED (sidekick-labs/sre-brain#568, option 2)
+          --------------------------------------------------------------------------------
+          Asking the MODEL to end its comment with a nonce-bound HTML marker failed three
+          prompt iterations upstream: the tracking-comment update path appears to strip
+          HTML comments. What the model DOES reliably produce is severity-labelled
+          findings (`BLOCKING` / `ADVISORY`). So the verdict is derived here,
+          deterministically, from the reviewer's comment, and the nonce-bound marker is
+          authored by the WORKFLOW (see claude-code-review.yml). Nothing the model or a
+          human writes into a comment is ever read as a marker.
+
+          THE RULE (exact; tests/review-gate-exit-codes.py pins every clause)
+          -------------------------------------------------------------------
+          1. Candidate comments are those whose author login == --author (REST spelling,
+             `github-actions[bot]` in this org). Anything else is ignored; a non-reviewer comment that carries a
+             verdict marker or imitates this run's lane header is COUNTED AND REPORTED as an
+             ignored forgery, never obeyed.
+          2. A LANE COMMENT is a reviewer comment whose first non-blank line is the
+             action's own tracking header — `**Claude finished ...` or
+             `**Claude encountered an error ...` — AND which links `/actions/runs/<run-id>`
+             for THIS run. The selected lane comment is the LAST such comment (API order =
+             creation order) created at or after --since (the review window's start, minus
+             SKEW_SECONDS of clock-skew allowance). Never "latest bot comment".
+          3. Fail closed (UNDETERMINED) when: there is no lane comment for this run; the
+             selected lane comment is `Claude encountered an error`; its first line is
+             neither known header; or the review carries no substance (nothing but the
+             header, the job link, rules, headings and task checkboxes — a zero-turn run).
+          4. The findings scanned are the selected lane comment PLUS any other reviewer
+             comment created inside the window that carries no lane header (a review the
+             model posted with `gh pr comment` instead of the tracking comment). Scanning
+             more can only add BLOCKING, never remove it.
+          5. BLOCKING iff at least one BLOCKING-LABELLED finding exists (see
+             `blocking_findings`). Otherwise PASS.
+
+             A LABEL, not the word. `No BLOCKING findings`, `No **BLOCKING** findings`,
+             `### BLOCKING fix verified — #1 resolved` and `the `ADVISORY` tier` are all
+             prose and never count. Recognised label shapes (case-insensitive prefix):
+               * `**BLOCKING — title**`, `BLOCKING: title`, `- **BLOCKING** title`,
+                 `[BLOCKING] title`, `### BLOCKING — title`, `1. **BLOCKING:** title`
+               * a bare section heading/label (`### BLOCKING`, `**BLOCKING findings:**`)
+                 followed by content — counted unless its next non-blank line is an
+                 explicit "none" or the next heading (an empty section)
+               * `BLOCKING: none` / `BLOCKING findings — None.` are explicit empties
+               * a heading or bold line ENDING in `— BLOCKING`, `(BLOCKING)`, `[BLOCKING]`
+                 (uppercase only)
+               * a table row with a cell that is exactly `BLOCKING`
+             Lines inside CLOSED fenced code blocks are ignored (an unclosed trailing fence
+             is not honoured, so it cannot hide a label; a reviewer quoting a diff of this
+             very prompt must not red its own PR).
+
+             PASS therefore means "a completed review for THIS run contains zero
+             BLOCKING-labelled findings". A completed review with no labels at all is PASS —
+             that is exactly what it would have been under the marker contract, where the
+             model chose PASS. Prose like "No BLOCKING findings" is never what makes it PASS;
+             it simply is not a label, so it cannot make it BLOCKING either.
+
+          I/O: reads JSON lines `{id, login, created_at, html_url, body}` on stdin (the shape
+          the workflow's `gh api ... | tojson` emits) and prints ONE JSON object:
+          `{verdict: PASS|BLOCKING|UNDETERMINED, reason, comment_url, blocking: [..],
+          ignored_forgeries: n, ignored_reviewer_markers: n}`. Exit 0 whenever it produced
+          that object; any crash is a non-zero exit, which the workflow treats as fail-closed.
+          """
+          import argparse
+          import datetime as dt
+          import json
+          import re
+          import sys
+
+          HEADER_FINISHED = re.compile(r"^\*\*Claude finished\b")
+          HEADER_ERRORED = re.compile(r"^\*\*Claude encountered an error\b")
+          LANE_HEADER = re.compile(r"^\*\*Claude (finished|encountered an error)\b")
+          MARKER = re.compile(r"<!--\s*claude-review-verdict:", re.I)
+
+          FENCE = re.compile(r"^\s{0,3}(```|~~~)")
+          HEADING = re.compile(r"^\s{0,3}(#{1,6})\s")
+          # Leading markup that may precede a label: quote markers, list bullets, ordered-list
+          # numbers, heading hashes, emphasis and opening brackets.
+          LEAD = re.compile(r"^(?:\s|>)*(?:(?:[-*+]|\d+[.)])\s+)?(?:#{1,6}\s+)?(?P<open>[*_\[(]*)\s*")
+          LABEL = re.compile(r"^BLOCKING(?![A-Za-z])(?P<words>\s+(?:findings?|issues?|defects?))?", re.I)
+          WRAP_CLOSE = re.compile(r"^(?P<close>[*_\])]*)")
+          DELIM = re.compile(r"^[:—–-]")
+          SUFFIX = re.compile(r"(?:[—–:-]\s*\**\s*BLOCKING|\(\s*BLOCKING\s*\)|\[\s*BLOCKING\s*\])\s*[*_]*\s*$")
+          NONE_TEXT = re.compile(
+              r"^(?:none|nothing|n/?a|0|zero|nil|"
+              r"no(?:\s+blocking)?\s+(?:findings?|issues?|defects?|problems?|concerns?)"
+              r"(?:\s+(?:found|raised|identified))?|none\s+(?:found|raised|identified))[.!]?$",
+              re.I,
+          )
+          CHECKBOX = re.compile(r"^\s*[-*+]\s+\[[ xX]\]\s")
+          RULE = re.compile(r"^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$")
+
+
+          def _clean(text):
+              """Strip emphasis/whitespace/trailing punctuation for 'is this an explicit none?'."""
+              return re.sub(r"[*_`\s]+", " ", text).strip(" .:;—–-")
+
+
+          def _is_none(text):
+              return bool(NONE_TEXT.match(_clean(text)))
+
+
+          def _unfenced_lines(body):
+              """Yield (index, line, in_fence) for every line; fenced lines are flagged.
+
+              An UNCLOSED fence does not hide the rest of the comment: if the body ends
+              inside a fence, the lines after that last opener are treated as unfenced, so
+              a broken fence can never suppress a BLOCKING label (fail-safe direction)."""
+              lines = body.split("\n")
+              in_fence, opener = False, None
+              for i, line in enumerate(lines):
+                  if FENCE.match(line):
+                      in_fence = not in_fence
+                      opener = i if in_fence else None
+              in_fence = False
+              for i, line in enumerate(lines):
+                  if opener is not None and i > opener:
+                      yield i, line, False
+                      continue
+                  if FENCE.match(line):
+                      in_fence = not in_fence
+                      yield i, line, True
+                      continue
+                  yield i, line, in_fence
+
+
+          def _next_content(lines, i):
+              for j in range(i + 1, len(lines)):
+                  if lines[j].strip():
+                      return lines[j]
+              return ""
+
+
+          def _label_kind(line):
+              """Classify a line: None (no BLOCKING label), 'finding', 'empty' (explicit none),
+              or 'section' (a bare label whose content follows on later lines)."""
+              stripped = line.strip()
+              if not stripped:
+                  return None
+
+              # Table row: any cell that is exactly BLOCKING.
+              if stripped.startswith("|"):
+                  cells = [_clean(c) for c in stripped.strip("|").split("|")]
+                  if not any(c.upper() == "BLOCKING" for c in cells):
+                      return None
+                  others = [c for c in cells if c and c.upper() != "BLOCKING"]
+                  # A count/summary row (`| BLOCKING | 0 |`, `| BLOCKING | none |`) is empty.
+                  return "empty" if others and all(_is_none(c) for c in others) else "finding"
+
+              m = LEAD.match(line)
+              rest = line[m.end():]
+              opened = m.group("open")
+              lm = LABEL.match(rest)
+              if lm:
+                  after = rest[lm.end():]
+                  closed = WRAP_CLOSE.match(after).group("close")
+                  after = after[len(closed):].lstrip()
+                  wrapped = bool(opened) and bool(closed)
+                  if "<short title>" in after:
+                      return None  # the prompt's own template line, quoted back
+                  if DELIM.match(after):
+                      tail = after[1:].strip()
+                      tail_clean = _clean(tail)
+                      if not tail_clean:
+                          return "section"
+                      return "empty" if _is_none(tail) else "finding"
+                  if not after.strip(" *_"):
+                      # `### BLOCKING`, `**BLOCKING**`, `BLOCKING findings` alone on a line.
+                      return "section"
+                  if wrapped:
+                      # `**BLOCKING** title`, `[BLOCKING] title`.
+                      return "empty" if _is_none(after) else "finding"
+                  # `BLOCKING fix verified — ...`, `Blocking the main thread ...`: prose.
+                  return None
+
+              # Suffix label on a heading or a bold-led line: `### Title — BLOCKING`.
+              if (HEADING.match(line) or stripped.startswith("**")) and SUFFIX.search(stripped):
+                  return "finding"
+              return None
+
+
+          def blocking_findings(body):
+              """Return the list of BLOCKING-labelled finding lines in `body`."""
+              lines = body.split("\n")
+              found = []
+              for i, line, fenced in _unfenced_lines(body):
+                  if fenced:
+                      continue
+                  kind = _label_kind(line)
+                  if kind == "finding":
+                      found.append(line.strip())
+                  elif kind == "section":
+                      nxt = _next_content(lines, i)
+                      if not nxt.strip() or _is_none(nxt):
+                          continue
+                      nh, ch = HEADING.match(nxt), HEADING.match(line)
+                      if nh and ch and len(nh.group(1)) <= len(ch.group(1)):
+                          continue  # empty section: straight into the next sibling heading
+                      if nh and not ch and _label_kind(nxt) is None and "ADVISORY" in nxt.upper():
+                          continue
+                      found.append((line.strip() + " " + nxt.strip())[:200])
+              return found
+
+
+          def has_substance(body):
+              """True when the body holds something beyond the tracking scaffolding."""
+              for _, line, fenced in _unfenced_lines(body):
+                  s = line.strip()
+                  # Fenced lines (fence markers AND their content) are not review prose:
+                  # a body that is only a quoted snippet is not a completed review.
+                  if not s or fenced:
+                      continue
+                  if LANE_HEADER.match(s) or RULE.match(s) or CHECKBOX.match(line):
+                      continue
+                  if HEADING.match(line):
+                      continue
+                  return True
+              return False
+
+
+          def _ts(value):
+              try:
+                  return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+              except (AttributeError, ValueError):
+                  return None
+
+
+          def _first_line(body):
+              for line in body.split("\n"):
+                  if line.strip():
+                      return line.strip()
+              return ""
+
+
+          # Runner clock (window start) vs GitHub clock (created_at). The tracking comment
+          # is created well after the window opens (action setup), and an earlier attempt's
+          # comment is minutes older, so a small allowance costs nothing.
+          SKEW_SECONDS = 30
+
+
+          def derive(comments, author, run_id, since=None):
+              run_link = re.compile(r"/actions/runs/" + re.escape(str(run_id)) + r"(?!\d)")
+              since_ts = _ts(since) if since else None
+              if since_ts is not None:
+                  since_ts -= dt.timedelta(seconds=SKEW_SECONDS)
+              elif since:
+                  raise ValueError(f"unparseable --since {since!r}")
+
+              def in_window(c):
+                  if since_ts is None:
+                      return True
+                  t = _ts(c.get("created_at") or "")
+                  return t is not None and t >= since_ts
+
+              forged = 0
+              reviewer = []
+              for c in comments:
+                  body = c.get("body") or ""
+                  if c.get("login") != author:
+                      if MARKER.search(body) or (LANE_HEADER.match(_first_line(body)) and run_link.search(body)):
+                          forged += 1
+                      continue
+                  reviewer.append(c)
+
+              reviewer_markers = sum(1 for c in reviewer
+                                     if in_window(c) and MARKER.search(c.get("body") or ""))
+              out = {"verdict": "UNDETERMINED", "reason": "", "comment_url": "", "blocking": [],
+                     "ignored_forgeries": forged, "ignored_reviewer_markers": reviewer_markers}
+
+              lanes = [c for c in reviewer
+                       if LANE_HEADER.match(_first_line(c.get("body") or ""))
+                       and run_link.search(c.get("body") or "") and in_window(c)]
+              if not lanes:
+                  out["reason"] = (f"No review comment from {author} for run {run_id} was found "
+                                   "(no `Claude finished` / `Claude encountered an error` tracking "
+                                   "comment linking this run).")
+                  return out
+
+              lane = lanes[-1]
+              body = lane.get("body") or ""
+              out["comment_url"] = lane.get("html_url") or ""
+              first = _first_line(body)
+              if HEADER_ERRORED.match(first):
+                  out["reason"] = ("The reviewer's comment for this run says `Claude encountered an "
+                                   "error`: the review did not complete.")
+                  return out
+              if not HEADER_FINISHED.match(first):
+                  out["reason"] = "The reviewer's comment for this run has an unrecognised header."
+                  return out
+
+              extra = [c for c in reviewer
+                       if c is not lane and in_window(c)
+                       and not LANE_HEADER.match(_first_line(c.get("body") or ""))]
+              bodies = [body] + [c.get("body") or "" for c in extra]
+              if not any(has_substance(b) for b in bodies):
+                  out["reason"] = ("The reviewer's comment for this run says `Claude finished` but "
+                                   "contains no review content (a zero-turn run).")
+                  return out
+
+              for b in bodies:
+                  out["blocking"].extend(blocking_findings(b))
+              if out["blocking"]:
+                  out["verdict"] = "BLOCKING"
+                  out["reason"] = f"{len(out['blocking'])} BLOCKING-labelled finding(s)."
+              else:
+                  out["verdict"] = "PASS"
+                  out["reason"] = "A completed review with zero BLOCKING-labelled findings."
+              return out
+
+
+          def main():
+              ap = argparse.ArgumentParser()
+              ap.add_argument("--author", required=True)
+              ap.add_argument("--run-id", required=True)
+              ap.add_argument("--since", default="")
+              a = ap.parse_args()
+              comments = []
+              for line in sys.stdin:
+                  line = line.strip()
+                  if line:
+                      comments.append(json.loads(line))
+              print(json.dumps(derive(comments, a.author, a.run_id, a.since or None)))
+
+
+          if __name__ == "__main__":
+              main()
+          PY
+
+      - name: Derive the review verdict from the reviewer's comment
+        id: derive
+        if: >-
+          steps.token-check.outputs.skip != 'true'
+          && github.event.pull_request.user.login != 'dependabot[bot]'
+          && (steps.review.outcome == 'success' || steps.review_retry.outcome == 'success')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NONCE: ${{ github.run_id }}-${{ github.run_attempt }}
+          # EMPTY means the action returned WITHOUT running Claude. At the
+          # pinned SHA `conclusion` is set only after the model call
+          # (src/entrypoints/run.ts), past every early `return`.
+          REVIEW_CONCLUSION: ${{ steps.review_retry.outputs.conclusion || steps.review.outputs.conclusion }}
+          REVIEW_AUTHOR: ${{ inputs.review-author }}
+          WINDOW_START: ${{ steps.review_window.outputs.started_at }}
+        run: |
+          set -uo pipefail
+
+          fail_closed() {
+            echo "::error title=Claude review verdict undeterminable::$1 No verdict could be derived for run ${RUN_NONCE}, so this check is red rather than a green tick over an unadjudicated PR."
+            {
+              echo "### :x: Claude Code Review — verdict undeterminable"
+              echo
+              echo "$1"
+              echo
+              echo "The verdict is derived from the reviewer's own tracking comment for run"
+              echo "\`${RUN_NONCE}\` (its \`BLOCKING\` / \`ADVISORY\` labels), and that derivation"
+              echo "could not complete."
+              echo
+              echo "This check **fails closed**: an undeterminable verdict is not a pass."
+              echo "Common causes — the review errored, the reviewer posted nothing for this"
+              echo "run (a zero-turn run), or the comment list could not be read. Re-run the"
+              echo "check; if it recurs, read the rule in the \`Stage the verdict parser\` step."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          }
+
+          # THE ACTION NO-OPPED. Classified separately because the cause is
+          # specific and actionable. Still RED — no review was produced.
+          if [ -z "${REVIEW_CONCLUSION:-}" ]; then
+            echo "::error title=Claude review did not run (action no-opped)::The review step concluded success but set no conclusion output, so claude-code-action returned without calling the model. NO REVIEW WAS PRODUCED, so this check is red."
+            {
+              echo "### :x: Claude Code Review did not run — the action no-opped"
+              echo
+              echo "The review step concluded \`success\` but set no \`conclusion\` output, which"
+              echo "means claude-code-action returned before calling the model."
+              echo
+              echo "Known causes at the pinned SHA: the **workflow-validation guard** (the OIDC"
+              echo "token exchange requires the workflow file to be identical on the **default"
+              echo "branch**, false by construction on a PR that edits it — only reachable if"
+              echo "\`github_token\` stops being passed), or the action finding no prompt."
+              echo
+              echo "**No review was produced**, so this check is red rather than a green tick"
+              echo "over an unreviewed PR."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          fi
+
+          if [ -z "${WINDOW_START:-}" ]; then
+            fail_closed "The review window start was not recorded, so this run's review comment cannot be told apart from an earlier attempt's."
+          fi
+          if ! command -v python3 >/dev/null 2>&1; then
+            fail_closed "python3 is not available on this runner, so the reviewer's comment cannot be parsed."
+          fi
+          parser="${RUNNER_TEMP:-/tmp}/claude-review/derive_verdict.py"
+          if [ ! -f "$parser" ]; then
+            fail_closed "The verdict parser was not staged (${parser})."
+          fi
+
+          if ! raw=$(gh api --paginate "repos/${REPO}/issues/${PR}/comments" \
+               --jq '.[] | {id: .id, login: .user.login, created_at: .created_at, html_url: .html_url, body: .body} | tojson' 2>/dev/null); then
+            fail_closed "Could not read the comments on PR #${PR}."
+          fi
+
+          # The parser prints ONE JSON object. Comment text never reaches stdout
+          # (a body line starting `::` would otherwise be a workflow command);
+          # the BLOCKING finding titles go to the step summary only.
+          if ! result=$(printf '%s\n' "$raw" | python3 "$parser" \
+               --author "$REVIEW_AUTHOR" --run-id "$RUN_ID" --since "$WINDOW_START"); then
+            fail_closed "The verdict parser failed while reading the comments on PR #${PR}."
+          fi
+
+          verdict=$(printf '%s' "$result" | jq -r '.verdict // ""' 2>/dev/null || true)
+          reason=$(printf '%s' "$result" | jq -r '.reason // ""' 2>/dev/null || true)
+          url=$(printf '%s' "$result" | jq -r '.comment_url // ""' 2>/dev/null || true)
+          forged=$(printf '%s' "$result" | jq -r '.ignored_forgeries // 0' 2>/dev/null || echo 0)
+          own_markers=$(printf '%s' "$result" | jq -r '.ignored_reviewer_markers // 0' 2>/dev/null || echo 0)
+
+          # An IGNORED forgery is reported, never silently dropped.
+          if [ "${forged:-0}" != "0" ]; then
+            echo "::warning title=Ignored forged verdict::IGNORED ${forged} comment(s) not authored by ${REVIEW_AUTHOR} that carry a verdict marker or imitate this run's review header. Only the workflow authors the verdict marker; comments are never read for one."
+          fi
+          if [ "${own_markers:-0}" != "0" ]; then
+            echo "::notice title=Reviewer-written marker ignored::The reviewer's comment carries a claude-review-verdict marker. It is ignored: the verdict is derived from the review's labels and the marker is authored by the workflow."
+          fi
+
+          case "$verdict" in
+            PASS|BLOCKING) ;;
+            *) fail_closed "${reason:-The verdict parser returned no verdict.}" ;;
+          esac
+
+          # THE MARKER — authored here, bound to this run+attempt. `$verdict` is
+          # one of two literals by the `case` above, so no comment text reaches
+          # GITHUB_OUTPUT.
+          marker="<!-- claude-review-verdict: ${verdict} run=${RUN_NONCE} -->"
+          {
+            echo "verdict=${verdict}"
+            echo "marker=${marker}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Derived verdict for run ${RUN_NONCE}: ${verdict} — ${reason}"
+          {
+            echo "### Claude Code Review — derived verdict: \`${verdict}\`"
+            echo
+            echo "${reason}"
+            if [ -n "$url" ]; then echo "Source: the reviewer's comment for this run — ${url}"; fi
+            if [ "$verdict" = "BLOCKING" ]; then
+              echo
+              echo "BLOCKING-labelled findings:"
+              echo
+              printf '%s' "$result" | jq -r '.blocking[] | "- " + .' 2>/dev/null || true
+            fi
+            echo
+            echo "Workflow-authored marker (the only one the verdict step accepts):"
+            echo
+            echo "\`${marker}\`"
+            echo
+            echo "${marker}"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          exit 0
+
+      - name: Determine the review VERDICT
+        id: verdict
+        if: >-
+          steps.token-check.outputs.skip != 'true'
+          && github.event.pull_request.user.login != 'dependabot[bot]'
+          && (steps.review.outcome == 'success' || steps.review_retry.outcome == 'success')
+        env:
+          RUN_NONCE: ${{ github.run_id }}-${{ github.run_attempt }}
+          # The ONLY verdict input. A step output of this job — no comment,
+          # model or human, can write it.
+          DERIVED_MARKER: ${{ steps.derive.outputs.marker }}
+        run: |
+          set -uo pipefail
+
+          fail_closed() {
+            echo "::error title=Claude review verdict undeterminable::$1 This check is red rather than a green tick over an unadjudicated PR."
+            {
+              echo "### :x: Claude Code Review — verdict undeterminable"
+              echo
+              echo "$1"
+              echo
+              echo "This check **fails closed**: an undeterminable verdict is not a pass."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          }
+
+          # Exact match, THIS run+attempt only. `sed -n` prints nothing on a
+          # mismatch and still exits 0, so this cannot abort under -e/pipefail.
+          got=$(printf '%s\n' "${DERIVED_MARKER:-}" \
+            | sed -nE "s/^<!-- claude-review-verdict: (PASS|BLOCKING) run=${RUN_NONCE} -->\$/\1/p")
+
+          if [ -z "$got" ]; then
+            fail_closed "The workflow-authored verdict marker for run ${RUN_NONCE} is missing or malformed."
+          fi
+
+          if [ "$got" = "BLOCKING" ]; then
+            echo "::error title=Claude Code Review found a blocking issue::The review raised at least one BLOCKING-labelled (correctness or security) finding on this PR. Read the review comment, fix or rebut it, and push again. Advisory findings do not reach this branch. ${DERIVED_MARKER}"
+            {
+              echo "### :x: Claude Code Review — BLOCKING findings"
+              echo
+              echo "The review raised at least one **correctness or security** finding. The"
+              echo "details are in the review comment on this PR."
+              echo
+              echo "This check is red on purpose: a review that objects must be able to hold"
+              echo "the merge. Style, simplification and nit findings do **not** land here."
+              echo
+              echo "To unblock: fix the finding and push, or reply on the PR explaining why it"
+              echo "is not a defect and re-run the check."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          fi
+
+          echo "::notice title=Claude Code Review passed::A review ran for run ${RUN_NONCE} and raised no BLOCKING-labelled findings. Any advisory findings are in the review comment. ${DERIVED_MARKER}"
+          {
+            echo "### :white_check_mark: Claude Code Review — no blocking findings"
+            echo
+            echo "A review ran for run \`${RUN_NONCE}\` and raised no **correctness or"
+            echo "security** findings. Advisory findings, if any, are in the review comment"
+            echo "and do not block the merge."
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          exit 0

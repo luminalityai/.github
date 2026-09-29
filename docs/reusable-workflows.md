@@ -85,3 +85,34 @@ PR gate is opt-in per repo: add a caller (copying `pin-check-caller.yml`, pointi
 `uses:` at `luminalityai/.github/.github/workflows/pin-check.yml@main`). The
 recommended first adopter is **luminality-web** (the busiest repo); roll the gate
 out to the rest incrementally rather than adding 40+ callers at once.
+
+## Claude Code Review verdict
+
+`claude-code-review.yml` emits a machine-readable verdict, ported from
+sidekick-labs/.github's `claude-review` composite. The reviewer labels every
+finding `**BLOCKING — …**` (correctness/security: merging ships a defect) or
+`**ADVISORY — …**` (everything else); the workflow then derives the verdict
+deterministically from the reviewer's own tracking comment for that run and
+authors a nonce-bound marker itself. The model never declares the verdict.
+
+The check on callers' PRs is `review / Claude Code Review`, and its **job
+conclusion is the verdict**:
+
+| situation | conclusion |
+|---|---|
+| review ran, no BLOCKING-labelled finding (advisory only, or none) | success |
+| review ran, at least one BLOCKING-labelled finding | **failure** |
+| review crashed on both attempts (one retry absorbs flakes) | **failure** |
+| action returned without calling the model | **failure** (classified "no-opped") |
+| verdict undeterminable (no tracking comment for this run, `Claude encountered an error`, zero-turn comment, unreadable comments) | **failure** (fail closed) |
+| dependabot / fork PR (no token by design) | success, no verdict, `::notice` says why |
+| same-repo PR with the org token missing | **failure** |
+
+The verdict is also a `workflow_call` output (`verdict`: `PASS`/`BLOCKING`,
+empty when skipped; `marker`) and is written to the job's step summary. The
+check is **not required** anywhere; it informs the merge policy.
+
+`tests/review-gate-exit-codes.py` (run by `test-review-gate.yml`) pins the
+parser against real review bodies and the exit codes against synthetic comment
+lists. It proves the parser, not that a real defect gets labelled BLOCKING —
+that needs one live positive control.
