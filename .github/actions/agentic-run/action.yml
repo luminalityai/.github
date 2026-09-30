@@ -31,9 +31,9 @@ inputs:
     required: false
     default: ""
   model:
-    description: "Claude model (e.g. claude-sonnet-5)."
+    description: "Claude model (e.g. claude-sonnet-5-5)."
     required: false
-    default: "claude-sonnet-5"
+    default: "claude-sonnet-5-5"
   allowed-tools:
     description: "Comma-separated tools the agent may use."
     required: false
@@ -41,12 +41,12 @@ inputs:
   effort:
     description: >
       Reasoning effort passed to Claude Code via --effort
-      (low | medium | high | xhigh | max). Empty default = no flag appended.
-      Callers pass vars.CLAUDE_EFFORT as the estate floor; coding/correctness
-      lanes pass 'high' or above. vars.* is not readable inside a composite, so
-      the caller supplies it.
+      (low | medium | high | xhigh | max). Defaults to 'high', the estate
+      standard; an explicitly empty value appends no flag. Callers pass
+      vars.CLAUDE_EFFORT || 'high'. vars.* is not readable inside a composite,
+      so the caller supplies it.
     required: false
-    default: ''
+    default: 'high'
 
 runs:
   using: "composite"
@@ -80,7 +80,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - name: Run Claude Code
-      uses: anthropics/claude-code-action@ba0aafd4308cbba7165f9f2cdb0cfbed5a3c99ce # v1.0.168 (auth: older bundled CLI 401s on OAuth tokens after the 2026-07-07 Anthropic auth change; see rarebit-ops#119)
+      uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1.0.236 (bundled CLI 2.1.284 is the first that knows claude-sonnet-5-5)
       env:
         # The agent's `gh`/`git` calls inside Bash use this (cross-repo needs an app token).
         GH_TOKEN: ${{ inputs.github-token || github.token }}
@@ -90,6 +90,6 @@ runs:
         prompt: ${{ steps.prep.outputs.value }}
         additional_permissions: |
           actions: read
-        # --effort is appended only when the caller passes a non-empty `effort`
-        # (vars.* isn't readable inside a composite, so the caller supplies it).
+        # --effort is appended whenever `effort` is non-empty (default 'high';
+        # vars.* isn't readable inside a composite, so the caller supplies it).
         claude_args: --model ${{ inputs.model }} --allowedTools "${{ inputs.allowed-tools }}"${{ inputs.effort && format(' --effort {0}', inputs.effort) || '' }}
