@@ -93,9 +93,9 @@ env:
   # Single source of truth for the Claude model across this repo's Claude
   # workflows. Override org-wide via the CLAUDE_MODEL Actions variable; the
   # literal is a safe fallback so an unset var can't yield an empty --model.
-  CLAUDE_MODEL: "${{ vars.CLAUDE_MODEL || 'claude-sonnet-5' }}"
-  # Reasoning effort, same pattern. Claude 5 models hold review accuracy at
-  # lower effort, so the estate floor is a var rather than a hardcoded 'high'.
+  CLAUDE_MODEL: "${{ vars.CLAUDE_MODEL || 'claude-sonnet-5-5' }}"
+  # Reasoning effort, same pattern. The estate standard is claude-sonnet-5-5 at
+  # high effort (org var CLAUDE_EFFORT=high); the literal matches it.
   CLAUDE_EFFORT: "${{ vars.CLAUDE_EFFORT || 'high' }}"
 
 jobs:
@@ -182,7 +182,7 @@ jobs:
         # non-deterministic and still open upstream). The step's own conclusion
         # stays honest in the UI; the steps below decide the JOB conclusion.
         continue-on-error: true
-        uses: anthropics/claude-code-action@4036a180cf690f49529f5d8c79c998855287f590 # v1.0.230 (OAuth needs >=v1.0.168 since the 2026-07-07 Anthropic auth change; see rarebit-ops#119)
+        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1.0.236 (bundled CLI 2.1.284 is the first that knows claude-sonnet-5-5)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Pass the default Actions token explicitly. Without a github_token the
@@ -274,7 +274,7 @@ jobs:
         id: review_retry
         if: steps.review.outcome == 'failure'
         continue-on-error: true
-        uses: anthropics/claude-code-action@4036a180cf690f49529f5d8c79c998855287f590 # v1.0.230 (keep in step with the first attempt's pin)
+        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1.0.236 (keep in step with the first attempt's pin)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}

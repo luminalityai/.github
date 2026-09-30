@@ -155,7 +155,7 @@ def result_record(**over):
     rec = {"type": "result", "subtype": "success", "is_error": False,
            "duration_ms": 41000, "num_turns": 12, "total_cost_usd": 0.42}
     rec.update(over)
-    return [{"type": "system", "subtype": "init", "model": "claude-sonnet-5"}, rec]
+    return [{"type": "system", "subtype": "init", "model": "claude-sonnet-5-5"}, rec]
 
 
 # The 2026-08-31 Bun "directory mismatch" crash: is_error on turn 1.
