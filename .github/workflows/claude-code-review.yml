@@ -182,7 +182,7 @@ jobs:
         # non-deterministic and still open upstream). The step's own conclusion
         # stays honest in the UI; the steps below decide the JOB conclusion.
         continue-on-error: true
-        uses: anthropics/claude-code-action@4036a180cf690f49529f5d8c79c998855287f590 # v1.0.230 (OAuth needs >=v1.0.168 since the 2026-07-07 Anthropic auth change; see rarebit-ops#119)
+        uses: anthropics/claude-code-action@756cc22e19660d20e8cc9496b4f242475a7f7790 # v1.0.230 (OAuth needs >=v1.0.168 since the 2026-07-07 Anthropic auth change; see rarebit-ops#119)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Pass the default Actions token explicitly. Without a github_token the
@@ -274,7 +274,7 @@ jobs:
         id: review_retry
         if: steps.review.outcome == 'failure'
         continue-on-error: true
-        uses: anthropics/claude-code-action@4036a180cf690f49529f5d8c79c998855287f590 # v1.0.230 (keep in step with the first attempt's pin)
+        uses: anthropics/claude-code-action@756cc22e19660d20e8cc9496b4f242475a7f7790 # v1.0.230 (keep in step with the first attempt's pin)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
