@@ -71,6 +71,7 @@ Located under `.github/actions/`. Consumed via
 | Action | Purpose |
 |--------|---------|
 | `agentic-run` | Run Claude Code on a custom prompt (inline or `prompt-file`) — the judgment + write layer for scheduled/cron agent workflows (e.g. in `delivery-ops`). Takes an OAuth token, an optional cross-repo App `github-token`, and `model` / `allowed-tools` / `effort` inputs. See its [`README.md`](.github/actions/agentic-run/README.md). |
+| `ci-complete` | The body of a repo's `CI Complete` aggregator: fails unless every job in `needs` succeeded or was skipped, with one annotation per failing job. Use it from a hosted, `if: always()` job with `results: ${{ toJSON(needs) }}`, pinned by SHA. Tested by `test-ci-complete.yml`. Layer 2 of rarebit-one/jumpdrive-broker ADR 0003. |
 
 ## Required setup (human, one-time)
 
