@@ -496,7 +496,7 @@ jobs:
         id: slack_root
         if: always() && steps.check.outputs.skip != 'true' && inputs.dry_run != true
         continue-on-error: true
-        uses: luminalityai/.github/.github/actions/slack-deploy-thread@3dd891c12feb6cbb20a8d94535464782b0d196cb # main @ 2026-09-24
+        uses: luminalityai/.github/.github/actions/slack-deploy-thread@ecbef2d1730c4c51f311194a928625505f11c473 # main @ 2026-09-24
         with:
           bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
           channel: ${{ vars.SLACK_RELEASE_CHANNEL_ID }}
@@ -534,7 +534,7 @@ jobs:
       - name: Post release outcome into the thread
         if: always() && steps.slack_root.outputs.thread_ts != ''
         continue-on-error: true
-        uses: luminalityai/.github/.github/actions/slack-deploy-thread@3dd891c12feb6cbb20a8d94535464782b0d196cb # main @ 2026-09-24
+        uses: luminalityai/.github/.github/actions/slack-deploy-thread@ecbef2d1730c4c51f311194a928625505f11c473 # main @ 2026-09-24
         with:
           bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
           channel: ${{ vars.SLACK_RELEASE_CHANNEL_ID }}

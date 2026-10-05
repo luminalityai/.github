@@ -182,7 +182,7 @@ jobs:
         # non-deterministic and still open upstream). The step's own conclusion
         # stays honest in the UI; the steps below decide the JOB conclusion.
         continue-on-error: true
-        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1.0.236 (bundled CLI 2.1.284 is the first that knows claude-sonnet-5-5)
+        uses: anthropics/claude-code-action@ed670b4cf9de2a5a570d130d2f6197b9e543cd64 # v1.0.236 (bundled CLI 2.1.284 is the first that knows claude-sonnet-5-5)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Pass the default Actions token explicitly. Without a github_token the
@@ -274,7 +274,7 @@ jobs:
         id: review_retry
         if: steps.review.outcome == 'failure'
         continue-on-error: true
-        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1.0.236 (keep in step with the first attempt's pin)
+        uses: anthropics/claude-code-action@ed670b4cf9de2a5a570d130d2f6197b9e543cd64 # v1.0.236 (keep in step with the first attempt's pin)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
