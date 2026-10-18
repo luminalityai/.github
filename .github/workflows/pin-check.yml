@@ -568,4 +568,7 @@ jobs:
           if __name__ == "__main__":
               sys.exit(main())
           WFRUN_CHECK_EOF
+          # pyyaml is pre-installed on GitHub-hosted runners but not on self-hosted
+          # jdb runners; install it if absent so the check works on both.
+          python3 -c "import yaml" 2>/dev/null || pip3 install pyyaml --quiet
           python3 "${RUNNER_TEMP}/wfrun_check.py" .
