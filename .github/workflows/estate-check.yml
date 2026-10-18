@@ -39,7 +39,9 @@ permissions:
 
 jobs:
   estate-check:
-    runs-on: ubuntu-latest
+    # TEMPORARY until 2026-11-01: gates on jdb when the caller sets RUNNER_LABELS_GATE
+    # (user decision; GHA-014 reason 1 exception). Revert = delete the caller variable.
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS_GATE || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

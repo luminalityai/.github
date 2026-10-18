@@ -15,7 +15,8 @@ env:
 jobs:
   claude:
     name: Claude Code Agent
-    runs-on: ubuntu-latest
+    # Route to jdb when the caller sets RUNNER_LABELS; unset = ubuntu-latest fallback.
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '"ubuntu-latest"') }}
     timeout-minutes: 30
 
     steps:
