@@ -569,8 +569,14 @@ jobs:
               sys.exit(main())
           WFRUN_CHECK_EOF
           # pyyaml is pre-installed on GitHub-hosted runners but not on self-hosted
-          # jdb runners; install it if absent so the check works on both.
-          # Use `python3 -m pip` rather than `pip3`: jdb runners have python3 but
-          # pip3 may not be on PATH.
-          python3 -c "import yaml" 2>/dev/null || python3 -m pip install pyyaml --quiet
-          python3 "${RUNNER_TEMP}/wfrun_check.py" .
+          # jdb runners. On jdb runners the system Python has no pip module, so
+          # neither pip3 nor python3 -m pip works. Fall back to injecting pyyaml
+          # into the zizmor pipx venv (already created above) and running the
+          # script with that venv's Python, which does have pip.
+          if python3 -c "import yaml" 2>/dev/null; then
+            python3 "${RUNNER_TEMP}/wfrun_check.py" .
+          else
+            pipx inject zizmor pyyaml --quiet
+            "${PIPX_HOME:-${HOME}/.local/share/pipx}/venvs/zizmor/bin/python3" \
+              "${RUNNER_TEMP}/wfrun_check.py" .
+          fi
