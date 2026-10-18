@@ -570,5 +570,7 @@ jobs:
           WFRUN_CHECK_EOF
           # pyyaml is pre-installed on GitHub-hosted runners but not on self-hosted
           # jdb runners; install it if absent so the check works on both.
-          python3 -c "import yaml" 2>/dev/null || pip3 install pyyaml --quiet
+          # Use `python3 -m pip` rather than `pip3`: jdb runners have python3 but
+          # pip3 may not be on PATH.
+          python3 -c "import yaml" 2>/dev/null || python3 -m pip install pyyaml --quiet
           python3 "${RUNNER_TEMP}/wfrun_check.py" .
