@@ -103,6 +103,7 @@ jobs:
     # comment the issue), or `sweep` saw an open beat-failure issue that a
     # success may close. `!= 'false'` so a missing/failed lookup still runs it.
     if: ${{ always() && (contains(needs.*.result, 'failure') || needs.sweep.outputs.beat_issue_open != 'false') }}
+    # STAYS HOSTED: alert job must run even when the fleet is down (GHA-014 reason 1).
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

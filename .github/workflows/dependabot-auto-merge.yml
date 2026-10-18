@@ -72,7 +72,9 @@ jobs:
         startsWith(github.event.pull_request.head.ref, 'ci-fix/') ||
         startsWith(github.event.pull_request.head.ref, 'sentry-autofix/') ||
         startsWith(github.event.pull_request.head.ref, 'legal-sync/') ) )
-    runs-on: ubuntu-latest
+    # TEMPORARY until 2026-11-01: gates on jdb when the caller sets RUNNER_LABELS_GATE
+    # (user decision; GHA-014 reason 1 exception). Revert = delete the caller variable.
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS_GATE || '"ubuntu-latest"') }}
     permissions:
       contents: write
       pull-requests: write

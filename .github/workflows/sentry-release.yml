@@ -32,13 +32,11 @@ concurrency:
 jobs:
   sentry_release:
     name: Create Sentry Release
-    # HOSTED ON PURPOSE -- do not route to the homelab `jdb` fleet. The backend
-    # path uses getsentry/action-release, a DOCKER container action, and the
-    # runner pulls every container action's image at job SETUP, even when that
-    # step is skipped (has_frontend: true). The jdb image has no docker, so the
-    # job dies before its first step with `docker: command not found` (seen on
-    # luminality-web run 35963401157, 2026-09-24).
-    runs-on: ubuntu-latest
+    # Route to jdb when the caller sets RUNNER_LABELS; unset = ubuntu-latest fallback.
+    # getsentry/action-release v3 is composite but calls Docker internally on Linux
+    # (seen: luminality-web run 35963401157, 2026-09-24). Both paths now use sentry-cli
+    # via npm instead, which needs only node (present on jdb). No Docker required.
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '"ubuntu-latest"') }}
     timeout-minutes: 10
 
     env:
@@ -97,11 +95,19 @@ jobs:
         if: env.SKIP_SENTRY != 'true' && inputs.has_frontend
         run: sentry-cli releases finalize "$SENTRY_RELEASE"
 
-      # --- Backend-only path: simple release via action ---
+      # --- Backend-only path: simple release via sentry-cli ---
+      # Uses sentry-cli directly (same as the frontend path) instead of
+      # getsentry/action-release, which calls Docker internally on Linux and
+      # cannot run on jdb (no Docker daemon). node is present on all runners.
+
+      - name: Install sentry-cli (backend)
+        if: env.SKIP_SENTRY != 'true' && !inputs.has_frontend
+        run: npm install -g @sentry/cli
 
       - name: Create Sentry release (backend)
         if: env.SKIP_SENTRY != 'true' && !inputs.has_frontend
-        uses: getsentry/action-release@ff07929a6537bac57790c3451cf4d364aca38528 # v3.7.0
-        with:
-          environment: production
-          version: ${{ github.sha }}
+        run: |
+          sentry-cli releases new "$SENTRY_RELEASE"
+          sentry-cli releases set-commits "$SENTRY_RELEASE" --auto
+          sentry-cli releases finalize "$SENTRY_RELEASE"
+          sentry-cli releases deploys "$SENTRY_RELEASE" new -e production

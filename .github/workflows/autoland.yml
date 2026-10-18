@@ -62,7 +62,8 @@ permissions:
 jobs:
   sweep:
     name: Sweep eligible PRs
-    runs-on: ubuntu-latest
+    # Route to jdb when the caller sets RUNNER_LABELS; unset = ubuntu-latest fallback.
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '"ubuntu-latest"') }}
     timeout-minutes: 10
     # Serialise sweeps here, not only in the caller: overlapping runs could both
     # see no open heartbeat issue and open two.
@@ -101,6 +102,7 @@ jobs:
   alert:
     needs: [sweep]
     if: ${{ always() }}
+    # STAYS HOSTED: alert job must run even when the fleet is down (GHA-014 reason 1).
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # The issue list-then-create below must not race another run's alert job.
