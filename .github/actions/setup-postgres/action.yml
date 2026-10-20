@@ -131,27 +131,42 @@ runs:
         LOGFILE="$WORK/postgres.log"
         mkdir -p "$WORK" "$CACHE"
 
-        # curl with exponential backoff, because Maven Central answers 429 for
-        # minutes at a time and `--retry` alone gives up within seconds. Up to
-        # 8 attempts, 5s→120s apart (~6.5 min in all), which outlasts the
-        # throttle windows seen so far and is still far cheaper than a red
-        # lane. Any curl failure is retried, not only 429: transient 5xx and
-        # resets from the CDN look the same from here.
-        fetch() {  # fetch <url> <dest> <max-time>
-          local url="$1" dest="$2" max_time="$3" attempt=1 delay=5 rc
+        # Two sources for the same artefacts: Maven Central itself, and Google's
+        # public read-through mirror of it. repo1.maven.org has throttled
+        # GitHub's runners with HTTP 429 for 2+ hours at a stretch
+        # (rarebit-one/rarebit-sre#483, 2026-10-20), long enough that the
+        # backoff below ran out too; the mirror answered throughout.
+        # <rel> is the path under /maven2/.
+        MIRRORS=(
+          "https://repo1.maven.org/maven2"
+          "https://maven-central.storage-download.googleapis.com/maven2"
+        )
+        UA="setup-postgres (github-actions composite; https://github.com/luminalityai/.github)"
+
+        # Each attempt tries every mirror in turn; between attempts, exponential
+        # backoff (5s→120s, 8 attempts, ~6.5 min in all). Any curl failure is
+        # retried, not only 429: transient 5xx and CDN resets look the same.
+        fetch() {  # fetch <rel-path> <dest> <max-time>
+          local rel="$1" dest="$2" max_time="$3" attempt=1 delay=5 rc=0 base
           while :; do
-            if curl -fsSL --max-time "$max_time" -o "$dest" "$url"; then return 0; fi
-            rc=$?
+            for base in "${MIRRORS[@]}"; do
+              if curl -fsSL -A "$UA" --max-time "$max_time" -o "$dest" "$base/$rel"; then
+                [ "$base" = "${MIRRORS[0]}" ] || echo "fetched from mirror: $base/$rel"
+                return 0
+              fi
+              rc=$?
+              echo "download attempt $attempt via $base failed (curl rc=$rc): $rel"
+            done
             if [ "$attempt" -ge 8 ]; then
-              echo "::error::download failed after $attempt attempts (curl rc=$rc): $url"; return "$rc"
+              echo "::error::download failed after $attempt attempts on every mirror: $rel"; return "$rc"
             fi
-            echo "download attempt $attempt failed (curl rc=$rc); retrying in ${delay}s: $url"
+            echo "retrying in ${delay}s"
             sleep "$delay"
             attempt=$((attempt + 1)); delay=$((delay * 2)); [ "$delay" -gt 120 ] && delay=120
           done
         }
 
-        META_BASE="https://repo1.maven.org/maven2/io/zonky/test/postgres/embedded-postgres-binaries-$classifier"
+        ARTIFACT="io/zonky/test/postgres/embedded-postgres-binaries-$classifier"
 
         # ── 1. Serve from cache when it holds a verified jar for this input ──
         resolved=""
@@ -174,7 +189,7 @@ runs:
             resolved="$VERSION"
           else
             echo "resolving newest $VERSION.x from Maven Central metadata…"
-            fetch "$META_BASE/maven-metadata.xml" "$WORK/maven-metadata.xml" 60
+            fetch "$ARTIFACT/maven-metadata.xml" "$WORK/maven-metadata.xml" 60
             resolved="$(grep -oE "<version>${VERSION}\.[0-9]+\.[0-9]+</version>" "$WORK/maven-metadata.xml" \
               | sed -E 's/<[^>]+>//g' | sort -V | tail -1)"
           fi
@@ -185,10 +200,9 @@ runs:
 
           # ── 3. Download the zonky jar + verify its published SHA-1 ────────
           JAR="embedded-postgres-binaries-$classifier-$resolved.jar"
-          URL="$META_BASE/$resolved/$JAR"
-          echo "downloading $URL"
-          fetch "$URL" "$CACHE/$JAR" 300
-          fetch "$URL.sha1" "$CACHE/jar.sha1" 60
+          echo "downloading $ARTIFACT/$resolved/$JAR"
+          fetch "$ARTIFACT/$resolved/$JAR" "$CACHE/$JAR" 300
+          fetch "$ARTIFACT/$resolved/$JAR.sha1" "$CACHE/jar.sha1" 60
           expected="$(tr -d '[:space:]' < "$CACHE/jar.sha1")"
           actual="$(sha1sum "$CACHE/$JAR" | awk '{print $1}')"
           if [ "$expected" != "$actual" ]; then
