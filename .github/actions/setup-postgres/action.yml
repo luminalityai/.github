@@ -72,29 +72,11 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - id: up
+    # ── 0. Classifier first, so the cache key can name it ─────────────────
+    - id: classify
       shell: bash
-      env:
-        INPUT_VERSION: ${{ inputs.version }}
-        INPUT_PORT: ${{ inputs.port }}
-        INPUT_DATABASE: ${{ inputs.database }}
-        INPUT_USERNAME: ${{ inputs.username }}
       run: |
         set -euo pipefail
-
-        VERSION="${INPUT_VERSION:-18}"
-        PORT="${INPUT_PORT:-5432}"
-        DATABASE="${INPUT_DATABASE:-postgres}"
-        USERNAME="${INPUT_USERNAME:-postgres}"
-
-        : "${RUNNER_TEMP:?RUNNER_TEMP must be set}"
-        WORK="$RUNNER_TEMP/setup-postgres"
-        PGROOT="$WORK/dist"
-        PGDATA="$WORK/data"
-        LOGFILE="$WORK/postgres.log"
-        mkdir -p "$WORK"
-
-        # ── 1. Resolve OS/arch → zonky classifier ───────────────────────────
         os="$(uname -s)"; arch="$(uname -m)"
         if [ "$os" != "Linux" ]; then
           echo "::error::setup-postgres supports Linux runners only (got $os)"; exit 1
@@ -105,34 +87,119 @@ runs:
           *) echo "::error::unsupported arch '$arch'"; exit 1 ;;
         esac
         echo "runner: $os/$arch → zonky classifier $classifier"
+        echo "classifier=$classifier" >> "$GITHUB_OUTPUT"
+        : "${RUNNER_TEMP:?RUNNER_TEMP must be set}"
+        echo "cache-dir=$RUNNER_TEMP/setup-postgres/cache" >> "$GITHUB_OUTPUT"
 
-        # ── 2. Resolve newest patch of the major (or use exact X.Y.Z) ───────
+    # ── 0b. The jar, cached across jobs AND runs ─────────────────────────
+    # Maven Central rate-limits GitHub's runners (HTTP 429) for stretches of an
+    # hour or more, and every job of every workflow re-downloaded the same jar
+    # through it (rarebit-one/rarebit-sre#483 took the whole luminality lane
+    # down for ~2 h). Keyed on classifier + the requested version input, so a
+    # bare major ("17") is served from cache until the entry is evicted (7 days
+    # unused); the newest patch is re-resolved on the next miss. The post-job
+    # save runs only when the key missed; the content under one key is
+    # immutable, and the jar's own SHA-1 is re-verified on every hit.
+    - id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.classify.outputs.cache-dir }}
+        key: setup-postgres-v1-${{ steps.classify.outputs.classifier }}-${{ inputs.version }}
+
+    - id: up
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_PORT: ${{ inputs.port }}
+        INPUT_DATABASE: ${{ inputs.database }}
+        INPUT_USERNAME: ${{ inputs.username }}
+        CLASSIFIER: ${{ steps.classify.outputs.classifier }}
+        CACHE: ${{ steps.classify.outputs.cache-dir }}
+      run: |
+        set -euo pipefail
+
+        VERSION="${INPUT_VERSION:-16}"
+        PORT="${INPUT_PORT:-5432}"
+        DATABASE="${INPUT_DATABASE:-postgres}"
+        USERNAME="${INPUT_USERNAME:-postgres}"
+        classifier="$CLASSIFIER"
+
+        : "${RUNNER_TEMP:?RUNNER_TEMP must be set}"
+        WORK="$RUNNER_TEMP/setup-postgres"
+        PGROOT="$WORK/dist"
+        PGDATA="$WORK/data"
+        LOGFILE="$WORK/postgres.log"
+        mkdir -p "$WORK" "$CACHE"
+
+        # curl with exponential backoff, because Maven Central answers 429 for
+        # minutes at a time and `--retry` alone gives up within seconds. Up to
+        # 8 attempts, 5s→120s apart (~6.5 min in all), which outlasts the
+        # throttle windows seen so far and is still far cheaper than a red
+        # lane. Any curl failure is retried, not only 429: transient 5xx and
+        # resets from the CDN look the same from here.
+        fetch() {  # fetch <url> <dest> <max-time>
+          local url="$1" dest="$2" max_time="$3" attempt=1 delay=5 rc
+          while :; do
+            if curl -fsSL --max-time "$max_time" -o "$dest" "$url"; then return 0; fi
+            rc=$?
+            if [ "$attempt" -ge 8 ]; then
+              echo "::error::download failed after $attempt attempts (curl rc=$rc): $url"; return "$rc"
+            fi
+            echo "download attempt $attempt failed (curl rc=$rc); retrying in ${delay}s: $url"
+            sleep "$delay"
+            attempt=$((attempt + 1)); delay=$((delay * 2)); [ "$delay" -gt 120 ] && delay=120
+          done
+        }
+
         META_BASE="https://repo1.maven.org/maven2/io/zonky/test/postgres/embedded-postgres-binaries-$classifier"
-        if printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-          resolved="$VERSION"
-        else
-          echo "resolving newest $VERSION.x from Maven Central metadata…"
-          resolved="$(curl -fsSL --retry 3 --max-time 60 "$META_BASE/maven-metadata.xml" \
-            | grep -oE "<version>${VERSION}\.[0-9]+\.[0-9]+</version>" \
-            | sed -E 's/<[^>]+>//g' | sort -V | tail -1)"
-        fi
-        if [ -z "${resolved:-}" ]; then
-          echo "::error::could not resolve a postgres version for major '$VERSION' ($classifier)"; exit 1
-        fi
-        echo "postgres version: $resolved"
 
-        # ── 3. Download the zonky jar + verify its published SHA-1 ──────────
-        JAR="embedded-postgres-binaries-$classifier-$resolved.jar"
-        URL="$META_BASE/$resolved/$JAR"
-        echo "downloading $URL"
-        curl -fsSL --retry 3 --max-time 300 -o "$WORK/$JAR" "$URL"
-        curl -fsSL --retry 3 --max-time 60 -o "$WORK/$JAR.sha1" "$URL.sha1"
-        expected="$(tr -d '[:space:]' < "$WORK/$JAR.sha1")"
-        actual="$(sha1sum "$WORK/$JAR" | awk '{print $1}')"
-        if [ "$expected" != "$actual" ]; then
-          echo "::error::SHA-1 mismatch for $JAR (expected $expected, got $actual)"; exit 1
+        # ── 1. Serve from cache when it holds a verified jar for this input ──
+        resolved=""
+        if [ -s "$CACHE/resolved" ] && [ -s "$CACHE/jar.sha1" ]; then
+          cached_version="$(tr -d '[:space:]' < "$CACHE/resolved")"
+          cached_jar="$CACHE/embedded-postgres-binaries-$classifier-$cached_version.jar"
+          if [ -s "$cached_jar" ] && \
+             [ "$(tr -d '[:space:]' < "$CACHE/jar.sha1")" = "$(sha1sum "$cached_jar" | awk '{print $1}')" ]; then
+            resolved="$cached_version"
+            echo "cache hit: postgres $resolved ($classifier), sha1 verified"
+          else
+            echo "cache entry present but unusable; re-downloading"
+            rm -f "$CACHE"/*
+          fi
         fi
-        echo "sha1 verified: $actual"
+
+        # ── 2. Otherwise resolve newest patch of the major (or exact X.Y.Z) ─
+        if [ -z "$resolved" ]; then
+          if printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            resolved="$VERSION"
+          else
+            echo "resolving newest $VERSION.x from Maven Central metadata…"
+            fetch "$META_BASE/maven-metadata.xml" "$WORK/maven-metadata.xml" 60
+            resolved="$(grep -oE "<version>${VERSION}\.[0-9]+\.[0-9]+</version>" "$WORK/maven-metadata.xml" \
+              | sed -E 's/<[^>]+>//g' | sort -V | tail -1)"
+          fi
+          if [ -z "${resolved:-}" ]; then
+            echo "::error::could not resolve a postgres version for major '$VERSION' ($classifier)"; exit 1
+          fi
+          echo "postgres version: $resolved"
+
+          # ── 3. Download the zonky jar + verify its published SHA-1 ────────
+          JAR="embedded-postgres-binaries-$classifier-$resolved.jar"
+          URL="$META_BASE/$resolved/$JAR"
+          echo "downloading $URL"
+          fetch "$URL" "$CACHE/$JAR" 300
+          fetch "$URL.sha1" "$CACHE/jar.sha1" 60
+          expected="$(tr -d '[:space:]' < "$CACHE/jar.sha1")"
+          actual="$(sha1sum "$CACHE/$JAR" | awk '{print $1}')"
+          if [ "$expected" != "$actual" ]; then
+            rm -f "$CACHE"/*
+            echo "::error::SHA-1 mismatch for $JAR (expected $expected, got $actual)"; exit 1
+          fi
+          echo "sha1 verified: $actual"
+          printf '%s\n' "$resolved" > "$CACHE/resolved"
+        fi
+        JAR="embedded-postgres-binaries-$classifier-$resolved.jar"
+        cp "$CACHE/$JAR" "$WORK/$JAR"
 
         # ── 4. Extract: jar → inner .txz → relocatable postgres tree ────────
         rm -rf "$PGROOT"; mkdir -p "$PGROOT"
