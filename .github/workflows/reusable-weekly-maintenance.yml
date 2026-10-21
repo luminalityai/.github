@@ -684,8 +684,13 @@ jobs:
   alert:
     needs: [maintenance]
     if: ${{ always() }}
-    # STAYS HOSTED: alert job must run even when the fleet is down (GHA-014 reason 1).
-    runs-on: ubuntu-latest
+    # RUNNER -- homelab via the CALLER's RUNNER_LABELS_LIGHT (a JSON array naming
+    # `linux`, never a bare `jdb`). GHA-014 reason 1 would keep an alert hosted so
+    # it still fires when the fleet is down, but luminalityai's Actions spending
+    # limit is $0: once the included minutes run out a hosted job is refused at
+    # queue time, so a hosted alert never fires at all (delivery-ops#478). Callers
+    # without the variable (public repos, whose minutes are free) stay hosted.
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS_LIGHT || '"ubuntu-latest"') }}
     # Runaway-hang cap. A single gh issue list/create/comment/close step; finishes
     # in seconds. 5 replaces the implicit 360-min (6h) default.
     timeout-minutes: 5
