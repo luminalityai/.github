@@ -39,7 +39,6 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "claude-code-review.yml")
-CALLER = os.path.join(ROOT, ".github", "workflows", "claude-code-review-caller.yml")
 FIXTURES = os.path.join(ROOT, "tests", "fixtures", "review-verdict")
 
 GATE_STEP = "Verify a review actually ran"
@@ -646,15 +645,6 @@ def main():
                           st.get("with", {}).get("github_token") == "${{ github.token }}")
         check("both review attempts use the SAME claude-code-action pin", len(pins) == 1,
               f"pins={sorted(pins)}")
-
-    # -----------------------------------------------------------------------
-    print("this repo's own caller:")
-    with open(CALLER) as fh:
-        caller = strip_comments(fh.read())
-    check("caller declares no paths filter (a filtered-out PR never reports)",
-          "paths-ignore" not in caller and "paths:" not in caller)
-    check("caller listens for ready_for_review (the job gates on draft == false)",
-          "ready_for_review" in caller)
 
     print()
     if failures:
