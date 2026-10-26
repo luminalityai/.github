@@ -6,9 +6,9 @@ targets = []
 [vendored]
 
 [sources]
-"rarebit-one/.github" = "c0e2f90695b8b8bdac80bacd4166aeb40626d66f"
+"rarebit-one/.github" = "2111fdb86de3fbd542a2d3f148497417aceb7468"
 
 [[file]]
 path = ".github/workflows/reusable-branch-promote.yml"
 source = "rarebit-one/.github"
-sha256 = "sha256:5956fd47ef55d35bf44fce5c4e79dbaedacc9121ca9aca7cf19fadac38686ed8"
+sha256 = "sha256:058988aed432ae06cc7694a89922f01c0eedfb83384e9158ab6b61be308ebe30"
