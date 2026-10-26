@@ -11,7 +11,7 @@ Slack — a missing token, missing channel, or a Slack API hiccup is logged as a
 
 | Message | Posted by | Fires |
 |---------|-----------|-------|
-| 🚀 **Release started** | this repo's reusable `deploy-production.yml`, `Notify Slack that the release started` step | Right after `main` is promoted to the `production` branch + the release tag is cut — before DigitalOcean finishes rolling out. |
+| 🚀 **Release started** | `reusable-branch-promote.yml` (vendored), `Post Slack release thread root` step (with `slack_thread: true`) | Right after `main` is promoted to the `production` branch + the release tag is cut — before DigitalOcean finishes rolling out. |
 
 > **Scope note.** Only the "release started" message exists today. `luminality-web`
 > is the sole repo that promotes via this reusable, and its production caller is

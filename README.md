@@ -26,7 +26,7 @@ so a repo can reference the reusables before its secrets are provisioned.
 | Doc | Covers |
 |-----|--------|
 | [`docs/reusable-workflows.md`](docs/reusable-workflows.md) | Full input contract for the reusables + a deep dive on the actions-pinning self-healer (`pin-check` / `pin-sweep` / Dependabot). |
-| [`docs/slack-release-notifications.md`](docs/slack-release-notifications.md) | The fail-soft Slack notify steps in `deploy-production.yml` / `sentry-release.yml` — what posts, when, and the `SLACK_BOT_TOKEN` / `SLACK_RELEASE_CHANNEL_ID` settings they read. |
+| [`docs/slack-release-notifications.md`](docs/slack-release-notifications.md) | The fail-soft Slack notify steps in `reusable-branch-promote.yml` / `sentry-release.yml` — what posts, when, and the `SLACK_BOT_TOKEN` / `SLACK_RELEASE_CHANNEL_ID` settings they read. |
 
 ## Reusable workflows
 
@@ -40,7 +40,7 @@ Consumed via `uses: luminalityai/.github/.github/workflows/<file>@<ref>`.
 |----------|---------|-----------|
 | `claude-code-review.yml` | Claude reviews a pull request's diff and posts findings. Runs (but step-gates out the LLM call) for Dependabot PRs so the required check still reports green. | Each repo's `claude-code-review-caller.yml` on `pull_request`. |
 | `claude-agent.yml` | Runs Claude Code as an interactive/dispatched agent (the shared job behind `@claude` mentions and agent tasks). | Consumer repos' agent callers. |
-| `deploy-production.yml` | Promotes `main → production` and cuts the release tag; posts the 🚀 "release started" Slack note and notifies Sentry (both fail-soft). | A repo's production caller — today only `luminality-web`. |
+| `reusable-branch-promote.yml` | The estate's one branch-promote production release, **vendored byte-identical from `rarebit-one/.github` by estate-sync** (edit it there): CI gate, fast-forward `production`, tag, Release, Sentry deploy; optional DO deploy + health gate and Slack release thread. | A repo's production caller (luminality-web, SHA-pinned). |
 | `sentry-release.yml` | Creates a Sentry release and associates commits; optionally uploads frontend source maps (`has_frontend`). | A repo's release caller (and the deploy flow). |
 | `reusable-weekly-maintenance.yml` | Per-stack (`rails` / `ruby-gem` / `node-lib` / `node-app` / `kmp`) weekly dependency + lint + security maintenance, opened as a PR. Referenced at `@v2`. | Each repo's weekly-maintenance caller. |
 | `pin-check.yml` | PR gate that **fails** when a third-party action isn't SHA-pinned (zizmor `unpinned-uses` + a config-aware `pinact --check`), using an owner-scoped policy synthesized at runtime. | Each repo's `pin-check-caller.yml` on `pull_request`. |
