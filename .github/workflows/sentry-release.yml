@@ -110,4 +110,6 @@ jobs:
           sentry-cli releases new "$SENTRY_RELEASE"
           sentry-cli releases set-commits "$SENTRY_RELEASE" --auto
           sentry-cli releases finalize "$SENTRY_RELEASE"
-          sentry-cli releases deploys "$SENTRY_RELEASE" new -e production
+          # No deploy is recorded here: this runs on push to main, which reaches
+          # staging at most. The production deploy is recorded by the prod deploy
+          # workflow at the promoted SHA (sidekick-labs/sre-brain#831).
