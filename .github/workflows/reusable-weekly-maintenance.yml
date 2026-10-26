@@ -259,6 +259,31 @@ jobs:
         if: ${{ inputs.stack == 'kmp' }}
         uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
 
+      # The kmp test command builds an Android target, which needs an SDK. The
+      # hosted image preinstalls one, but jdb runners don't, so provision it per
+      # job (on the hosted image this reuses the preinstalled SDK). `packages:
+      # platform-tools` drops the action's default `tools`, which Google removed
+      # from the SDK repository (android-actions/setup-android#537). Same steps
+      # as luminality-app ci.yml's ktlint job.
+      - name: Set up Android SDK
+        if: ${{ inputs.stack == 'kmp' }}
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          packages: platform-tools
+
+      # setup-android's own license acceptance can stall on self-hosted runners,
+      # and Gradle then fails on unaccepted licenses. Accept them non-interactively.
+      - name: Accept Android SDK licenses
+        if: ${{ inputs.stack == 'kmp' }}
+        shell: bash
+        run: |
+          SDKMANAGER=$(ls "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::warning::sdkmanager not found under cmdline-tools; licenses not accepted here, so Gradle may fail on them next"
+          else
+            yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          fi
+
       # ----- TODO/FIXME census (week-over-week diff via cache) -----
 
       - name: Restore previous TODO/FIXME census
