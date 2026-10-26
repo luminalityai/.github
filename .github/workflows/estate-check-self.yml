@@ -17,4 +17,4 @@ jobs:
   estate-check:
     uses: ./.github/workflows/estate-check.yml
     with:
-      mode: report
+      mode: enforce  # fails on error findings, e.g. a hand edit of a vendored [[file]] (sidekick-labs/sre-brain#832)

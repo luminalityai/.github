@@ -1,0 +1,14 @@
+# Rendered-file lock for estate-sync. Edit org/targets by hand;
+# `estate-sync --estate DIR` maintains [estate] and [vendored].
+version = 1
+targets = []
+
+[vendored]
+
+[sources]
+"rarebit-one/.github" = "c0e2f90695b8b8bdac80bacd4166aeb40626d66f"
+
+[[file]]
+path = ".github/workflows/reusable-branch-promote.yml"
+source = "rarebit-one/.github"
+sha256 = "sha256:5956fd47ef55d35bf44fce5c4e79dbaedacc9121ca9aca7cf19fadac38686ed8"
