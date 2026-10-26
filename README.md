@@ -44,7 +44,7 @@ Consumed via `uses: luminalityai/.github/.github/workflows/<file>@<ref>`.
 | `sentry-release.yml` | Creates a Sentry release and associates commits; optionally uploads frontend source maps (`has_frontend`). | A repo's release caller (and the deploy flow). |
 | `reusable-weekly-maintenance.yml` | Per-stack (`rails` / `ruby-gem` / `node-lib` / `node-app` / `kmp`) weekly dependency + lint + security maintenance, opened as a PR. Referenced at `@v2`. | Each repo's weekly-maintenance caller. |
 | `pin-check.yml` | PR gate that **fails** when a third-party action isn't SHA-pinned (zizmor `unpinned-uses` + a config-aware `pinact --check`), using an owner-scoped policy synthesized at runtime. | Each repo's `pin-check-caller.yml` on `pull_request`. |
-| `dependabot-auto-merge.yml` | Auto-lander: enables squash auto-merge for Dependabot patch/minor bumps and for vetted SRE engine branches (`issue-worker/`, `ci-fix/`, `sentry-autofix/`). Reads metadata only — checks out no PR code. | Each repo's thin `dependabot-auto-merge.yml` caller on `pull_request_target`. |
+| `dependabot-auto-merge.yml` | Auto-lander: enables squash auto-merge for Dependabot patch/minor bumps (plus majors of dev-dependencies and GitHub Actions) and for vetted SRE engine branches (`issue-worker/`, `ci-fix/`, `sentry-autofix/`). Reads metadata only — checks out no PR code. | Each repo's thin `dependabot-auto-merge.yml` caller on `pull_request_target`. |
 
 ### This repo's own self-callers / gates (run on PRs to `.github` itself)
 
