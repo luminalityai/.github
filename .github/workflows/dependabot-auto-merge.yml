@@ -9,6 +9,8 @@ name: Auto-lander (Dependabot + autonomous engine PRs)
 #   1. Dependabot PRs — read the semver update-type via fetch-metadata, then
 #      enable auto-merge for patch + minor, and for majors of dev-dependencies
 #      and GitHub Actions. Prod-runtime majors are left for a human.
+#      Before arming, a licence gate (actions/license-gate) classifies the
+#      lockfiles the PR changes; a blocked licence leaves the PR for a human.
 #   2. Autonomous release-bot PRs — branches prefixed issue-worker/, ci-fix/,
 #      sentry-autofix/ (the SRE engine workflows) or legal-sync/ (the
 #      luminality-static legal-document sync). These are already vetted by the
@@ -135,7 +137,25 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Licence gate (lockfiles this PR changes)
+        # Classify the lockfiles this Dependabot PR changes against the org
+        # licence policy before arming auto-merge. The action fetches them as
+        # DATA at the PR head (nothing checked out or run, so the safety note
+        # above still holds) and reads .github/license-policy.json from the
+        # base commit. verdict=block (AGPL/SSPL/BUSL/FSL/... or a classifier
+        # crash) leaves the PR for a human; warnings (GPL/LGPL/EPL/unknown) pass.
+        id: licence
+        if: github.actor == 'dependabot[bot]'
+        uses: luminalityai/.github/.github/actions/license-gate@acdf78468fda095346f311eafea546baf08a0868 # main @ 2026-11-11 (#120)
+        with:
+          repository: ${{ github.repository }}
+          pull-request: ${{ github.event.pull_request.number }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Approve and enable auto-merge (patch/minor any dep; major only dev-deps + Actions)
+        # Only when the licence gate above passed.
         # Arm native squash auto-merge — the repo's required checks still gate the
         # actual merge, so this only decides WHICH Dependabot PRs are allowed to
         # land unattended. Policy:
@@ -148,7 +168,8 @@ jobs:
         #     group's HIGHEST semver bump + its highest-precedence dependency-type,
         #     so a group carrying a prod major is correctly NOT armed here.
         if: >-
-          github.actor == 'dependabot[bot]' && (
+          github.actor == 'dependabot[bot]' &&
+          steps.licence.outputs.verdict == 'pass' && (
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor' || (
           steps.metadata.outputs.update-type == 'version-update:semver-major' && (
@@ -183,6 +204,22 @@ jobs:
             exit 1
           fi
           echo "auto-merge queued (or already merged) on $PR_URL — merge token: $MERGE_TOKEN_MODE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Licence gate blocked auto-merge
+        # Make a block visible on the PR (a red auto-merge check plus the
+        # license-check job summary) instead of silently leaving it unarmed.
+        if: github.actor == 'dependabot[bot]' && steps.licence.outputs.verdict != 'pass'
+        env:
+          VERDICT: ${{ steps.licence.outputs.verdict }}
+        run: |
+          echo "::error title=Licence gate::auto-merge NOT armed: a changed lockfile resolves to a blocked licence (verdict=${VERDICT:-none}). See the licence check summary; a human decides, or records an exception in .github/license-policy.json on main."
+          {
+            echo "### Licence gate: auto-merge not armed"
+            echo ""
+            echo "A lockfile this PR changes resolves to a licence the org policy blocks (verdict \`${VERDICT:-none}\`)."
+            echo "Review the table above. Merge by hand if it is acceptable, ideally after recording an exception in \`.github/license-policy.json\` on the default branch."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: Enable auto-merge — autonomous release-bot PR
         # Positive actor check (not just "!= dependabot"): only the release-bot
