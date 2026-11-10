@@ -1,0 +1,77 @@
+name: Test license-check
+
+# Exercises .github/actions/license-check. A licence gate's failure mode is a
+# confident pass, so the "must fail" fixture (an SSPL package, and an excepted
+# package whose licence changed) sits beside a "must pass" control that holds
+# every non-blocking class. Network-free: gem metadata comes from fixtures.
+#
+# Hosted only: this repo is public, and the jdb fleet refuses public repos.
+on:
+  pull_request:
+    paths:
+      - '.github/actions/license-check/**'
+      - '.github/workflows/test-license-check.yml'
+      - 'tests/license-check.py'
+      - 'tests/fixtures/license-check/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/license-check/**'
+      - '.github/workflows/test-license-check.yml'
+      - 'tests/license-check.py'
+      - 'tests/fixtures/license-check/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: license-check (unit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 tests/license-check.py
+
+  action:
+    name: license-check (${{ matrix.case }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: pass
+            want: success
+          - case: block
+            want: failure
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run license-check
+        id: gate
+        continue-on-error: true
+        uses: ./.github/actions/license-check
+        env:
+          LICENSE_CHECK_RUBYGEMS_DIR: ${{ github.workspace }}/tests/fixtures/license-check/gems
+        with:
+          working-directory: tests/fixtures/license-check/${{ matrix.case }}
+
+      - name: Assert the outcome
+        env:
+          GOT: ${{ steps.gate.outcome }}
+          WANT: ${{ matrix.want }}
+        run: |
+          if [ "$GOT" != "$WANT" ]; then
+            echo "::error::license-check returned $GOT, want $WANT"
+            exit 1
+          fi
+          echo "license-check returned $GOT as expected."

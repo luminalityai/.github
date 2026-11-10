@@ -1,0 +1,10 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    rdoc (8.1.0)
+    device_detector (1.1.3)
+    nokogiri (1.19.7-x86_64-linux-gnu)
+    nokogiri (1.19.7-aarch64-linux-gnu)
+
+PLATFORMS
+  x86_64-linux

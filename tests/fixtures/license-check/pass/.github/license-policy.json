@@ -1,0 +1,2 @@
+{"exceptions":[{"ecosystem":"npm","name":"sentry","license":"FSL-1.1-Apache-2.0","reason":"Sentry CLI, build-time only"}],
+ "declared":[{"ecosystem":"swiftpm","name":"https://github.com/getsentry/sentry-cocoa","license":"MIT","source":"LICENSE.md at 9.30.2"}]}
