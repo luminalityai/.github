@@ -9,6 +9,8 @@ name: Test license-check
 on:
   pull_request:
     paths:
+      - '.github/actions/license-gate/**'
+      - 'tests/license-gate.py'
       - '.github/actions/license-check/**'
       - '.github/workflows/test-license-check.yml'
       - 'tests/license-check.py'
@@ -16,6 +18,8 @@ on:
   push:
     branches: [main]
     paths:
+      - '.github/actions/license-gate/**'
+      - 'tests/license-gate.py'
       - '.github/actions/license-check/**'
       - '.github/workflows/test-license-check.yml'
       - 'tests/license-check.py'
@@ -38,6 +42,7 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 tests/license-check.py
+      - run: python3 tests/license-gate.py
 
   action:
     name: license-check (${{ matrix.case }})

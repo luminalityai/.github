@@ -1,0 +1,65 @@
+# Licence gate for unattended merges: classify the lockfiles a pull request
+# changes against the org licence policy and report whether it is safe to arm
+# auto-merge. Used by dependabot-auto-merge.yml before it approves and enables
+# auto-merge.
+#
+# Safe under pull_request_target: it checks out and runs nothing from the pull
+# request. The changed lockfiles are fetched as data at the PR head; the repo's
+# .github/license-policy.json is read from the BASE commit, so a pull request
+# can't grant itself an exception. Classification is license-check's script
+# (this repo, same ref), so the policy is identical to the CI check.
+name: Licence gate
+description: >-
+  Classify the lockfiles a pull request changes (fetched as data at its head)
+  against the org licence policy (exceptions from the base branch). Outputs
+  verdict=pass|block; never fails the step itself.
+inputs:
+  repository:
+    description: owner/repo of the pull request.
+    required: true
+  pull-request:
+    description: Pull request number.
+    required: true
+  head-sha:
+    description: Head commit of the pull request.
+    required: true
+  base-sha:
+    description: Base commit of the pull request.
+    required: true
+  token:
+    description: Token with read access to the repository contents and pull request.
+    required: true
+outputs:
+  verdict:
+    description: "'pass' (nothing blocked, or no lockfile changed) or 'block'."
+    value: ${{ steps.check.outputs.verdict }}
+runs:
+  using: composite
+  steps:
+    - name: Classify the changed lockfiles
+      id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repository }}
+        PR: ${{ inputs.pull-request }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        GATE: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/license-gate"
+        rm -rf "$dir"; mkdir -p "$dir"
+        staged="$(python3 -I "$GATE/fetch_lockfiles.py" "$REPO" "$PR" "$HEAD_SHA" "$BASE_SHA" "$dir")"
+        if [ -z "$staged" ]; then
+          echo "verdict=pass" >> "$GITHUB_OUTPUT"
+          echo "### Licence gate: no lockfile changed, nothing to check" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        # license-check sits beside this action in the same checkout of this repo.
+        if python3 -I "$GATE/../license-check/license_check.py" --root "$dir" \
+             --lockfiles "$(echo $staged)" --report "$RUNNER_TEMP/license-gate.json"; then
+          echo "verdict=pass" >> "$GITHUB_OUTPUT"
+        else
+          echo "verdict=block" >> "$GITHUB_OUTPUT"
+        fi
