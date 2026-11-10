@@ -36,7 +36,7 @@ def check(name, got, want):
 
 # Expression classification.
 for expr, want in [
-    ("MIT", "allow"), ("Apache 2.0", "allow"), ("The Apache Software License, Version 2.0", "allow"),
+    ("MIT", "allow"), ("MIT-0", "allow"), ("Apache 2.0", "allow"), ("The Apache Software License, Version 2.0", "allow"),
     ("(WTFPL OR MIT)", "allow"), ("Ruby OR GPL-2.0-only", "allow"), ("Apache-2.0 AND MIT", "allow"),
     ("MPL-2.0", "allow"), ("OFL-1.1", "allow"), ("CC-BY-4.0", "allow"),
     ("Android Software Development Kit License", "allow"),
