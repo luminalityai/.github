@@ -1,0 +1,58 @@
+# Classify every package in the caller's lockfiles against the org licence
+# policy and write the result to the job summary. Lockfiles only: nothing is
+# installed, built or uploaded, and no paid GitHub feature is needed.
+#
+#   license-check:
+#     name: Licence check
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 10
+#     # Advisory while the policy beds in: a block shows red on the job but
+#     # never fails the workflow. Not a required check; keep it out of CI Complete's needs.
+#     continue-on-error: true
+#     permissions:
+#       contents: read
+#     steps:
+#       - uses: actions/checkout@<sha> # v7
+#         with:
+#           persist-credentials: false
+#       - uses: luminalityai/.github/.github/actions/license-check@<sha> # main
+#
+# POLICY (same in every org; luminalityai/delivery-ops licensing audit 2026-11-10)
+#   allow   MIT, MIT-0, ISC, BSD-2/3-Clause, 0BSD, Apache-2.0, BlueOak-1.0.0,
+#           Unlicense, CC0-1.0, Python-2.0/PSF-2.0, Ruby, Zlib, MPL-2.0, OFL-1.1,
+#           CC-BY-4.0 (data only), Google Android SDK terms
+#   review  GPL/LGPL of any version, EPL, no detectable licence  -> warning
+#   block   AGPL, SSPL, BUSL, FSL, Commons Clause, Elastic, PolyForm,
+#           noncommercial                                          -> step fails
+#
+# Per-repo exceptions and declared licences (for lockfiles with no licence
+# metadata, such as SwiftPM) live in the caller's `.github/license-policy.json`.
+# See license_check.py for the format.
+name: Licence check
+description: >-
+  Classify the caller's npm, RubyGems and SwiftPM lockfile entries against the
+  org licence policy; summarise review and block items; fail on block.
+inputs:
+  working-directory:
+    description: Directory, relative to the workspace, to scan and to resolve lockfile and policy paths from.
+    required: false
+    default: '.'
+  lockfiles:
+    description: Space-separated lockfile paths. Default discovers package-lock.json, Gemfile.lock and Package.resolved.
+    required: false
+    default: ''
+  policy:
+    description: Repo policy file with exceptions and declared licences.
+    required: false
+    default: .github/license-policy.json
+runs:
+  using: composite
+  steps:
+    - name: Classify lockfile licences
+      shell: bash
+      env:
+        LOCKFILES: ${{ inputs.lockfiles }}
+        POLICY: ${{ inputs.policy }}
+        WORKDIR: ${{ inputs.working-directory }}
+        SCRIPT: ${{ github.action_path }}/license_check.py
+      run: python3 -I "$SCRIPT" --root "$GITHUB_WORKSPACE/$WORKDIR" --lockfiles "$LOCKFILES" --policy "$POLICY" --report "$RUNNER_TEMP/license-check.json"

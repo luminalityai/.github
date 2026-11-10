@@ -1,0 +1,2 @@
+# Bytecode written when tests/license-check.py imports the action script.
+__pycache__/

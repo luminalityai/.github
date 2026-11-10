@@ -51,6 +51,7 @@ Consumed via `uses: luminalityai/.github/.github/workflows/<file>@<ref>`.
 | Workflow | Purpose |
 |----------|---------|
 | `claude-code-review-caller.yml` | Fires `claude-code-review.yml` (referenced as `./`) on PRs to this repo, so changes to the shared reusables get reviewed. Reference wiring consumer repos copy. |
+| `test-license-check.yml` | Unit tests plus pass/block fixtures for the `license-check` action. |
 | `pin-check-caller.yml` | Fires `pin-check.yml` on this repo's own PRs. Reference wiring consumer repos copy (pointing `uses:` at `@main` instead of `./`). |
 
 ### Org-level scheduled sweeps (one instance for the whole org)
@@ -72,6 +73,7 @@ Located under `.github/actions/`. Consumed via
 |--------|---------|
 | `agentic-run` | Run Claude Code on a custom prompt (inline or `prompt-file`) — the judgment + write layer for scheduled/cron agent workflows (e.g. in `delivery-ops`). Takes an OAuth token, an optional cross-repo App `github-token`, and `model` / `allowed-tools` / `effort` inputs. See its [`README.md`](.github/actions/agentic-run/README.md). |
 | `ci-complete` | The body of a repo's `CI Complete` aggregator: fails unless every job in `needs` succeeded or was skipped, with one annotation per failing job. Use it from a hosted, `if: always()` job with `results: ${{ toJSON(needs) }}`, pinned by SHA. Tested by `test-ci-complete.yml`. Layer 2 of rarebit-one/jumpdrive-broker ADR 0003. |
+| `license-check` | Classifies every package in the caller's lockfiles (npm `package-lock.json`, `Gemfile.lock` via the RubyGems API, SwiftPM `Package.resolved`) against the org licence policy: allow permissive/MPL/OFL, warn on GPL/LGPL/EPL/unknown, fail on AGPL/SSPL/BUSL/FSL/Commons Clause/Elastic/PolyForm/noncommercial. Writes the job summary; per-repo exceptions and declared licences live in the caller's `.github/license-policy.json`. Lockfiles only, no paid feature. Callers run it as a non-required, `continue-on-error` job while it beds in. Tested by `test-license-check.yml`. |
 
 ## Required setup (human, one-time)
 
