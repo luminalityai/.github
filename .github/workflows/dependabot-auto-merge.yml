@@ -146,7 +146,7 @@ jobs:
         # crash) leaves the PR for a human; warnings (GPL/LGPL/EPL/unknown) pass.
         id: licence
         if: github.actor == 'dependabot[bot]'
-        uses: luminalityai/.github/.github/actions/license-gate@acdf78468fda095346f311eafea546baf08a0868 # main @ 2026-11-11 (#120)
+        uses: luminalityai/.github/.github/actions/license-gate@cf0a11a5ca1e0d35d3299b93ee9a39f869f2cca1 # main @ 2026-11-11 (#120)
         with:
           repository: ${{ github.repository }}
           pull-request: ${{ github.event.pull_request.number }}
