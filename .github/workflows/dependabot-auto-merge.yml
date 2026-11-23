@@ -90,7 +90,7 @@ jobs:
         # enable below falls back (loudly) to GITHUB_TOKEN instead of the whole
         # lander going down for that PR.
         continue-on-error: true
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
@@ -146,7 +146,7 @@ jobs:
         # crash) leaves the PR for a human; warnings (GPL/LGPL/EPL/unknown) pass.
         id: licence
         if: github.actor == 'dependabot[bot]'
-        uses: luminalityai/.github/.github/actions/license-gate@acdf78468fda095346f311eafea546baf08a0868 # main @ 2026-11-11 (#120)
+        uses: luminalityai/.github/.github/actions/license-gate@cf0a11a5ca1e0d35d3299b93ee9a39f869f2cca1 # main @ 2026-11-11 (#120)
         with:
           repository: ${{ github.repository }}
           pull-request: ${{ github.event.pull_request.number }}
