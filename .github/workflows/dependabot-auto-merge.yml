@@ -75,8 +75,11 @@ jobs:
         startsWith(github.event.pull_request.head.ref, 'ci-fix/') ||
         startsWith(github.event.pull_request.head.ref, 'sentry-autofix/') ||
         startsWith(github.event.pull_request.head.ref, 'legal-sync/') ) )
-    # TEMPORARY until 2026-11-01: gates on jdb when the caller sets RUNNER_LABELS_GATE
-    # (user decision; GHA-014 reason 1 exception). Revert = delete the caller variable.
+    # Runs on jdb when the caller sets RUNNER_LABELS_GATE, else ubuntu-latest. Allowed
+    # only because this job is not a required context in any luminalityai repo
+    # (rulesets checked 2026-11-26). A required gate must run hosted (ci-runner-placement.md,
+    # "Gates and required checks stay hosted"; rarebit-one/rarebit-sre#409); pin
+    # ubuntu-latest before any repo requires this check. The 2026-11-01 exception has ended.
     runs-on: ${{ fromJSON(vars.RUNNER_LABELS_GATE || '"ubuntu-latest"') }}
     permissions:
       contents: write
