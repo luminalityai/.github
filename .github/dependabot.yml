@@ -9,6 +9,14 @@ version: 2
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
+    # Workflows vendored by estate-sync are hash-locked in .agents/estate.lock
+    # and change only by a re-vendor from their source repo. A Dependabot bump
+    # to one fails estate-check's sync.vendored rule as a hand edit (#123), so
+    # exclude them here; their pins are bumped in the source repo and arrive via
+    # `estate-sync --source`. Keep this list in step with the lock's [[file]]
+    # paths. Same pattern as luminality-sre's lanes-sync exclusions.
+    exclude-paths:
+      - ".github/workflows/reusable-branch-promote.yml"
     schedule:
       interval: "weekly"
       day: "monday"
